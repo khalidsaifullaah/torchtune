@@ -527,7 +527,7 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
         batch_size: int,
         collate_fn: str,
         dataloader_state_dict: Optional[Dict[str, Any]] = None,
-    ) -> StatefulDataLoader:
+    ) -> DataLoader:
         """
         All data related setup happens here. This recipe currently supports only
         map-style datasets. If a state_dict is provided (meaning we are resuming a training run),
@@ -552,14 +552,14 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
             raise RuntimeError("left_pad_sequence collator is only for inference.")
         collate_fn = _get_component_from_path(collate_fn)
 
-        sampler = StatefulDistributedSampler(
+        sampler = DistributedSampler(
             ds,
             num_replicas=1,
             rank=0,
             shuffle=shuffle,
             seed=0,
         )
-        dataloader = StatefulDataLoader(
+        dataloader = DataLoader(
             dataset=ds,
             sampler=sampler,
             batch_size=batch_size,
@@ -719,7 +719,7 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
         num_tokens = 0
 
         # HACK for qwen
-        if self._tokenizer.__class__.__name__ == 'Qwen2Tokenizer':
+        if 'Qwen' in self._tokenizer.__class__.__name__:
             self._tokenizer.eot_id = self._tokenizer.special_tokens["<|im_end|>"]
             self._tokenizer.start_header_id = self._tokenizer.special_tokens['<|im_start|>']
 
