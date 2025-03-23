@@ -772,20 +772,23 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
                         ground_truth = self._tokenizer.decode(labels[end_idx:][labels[end_idx:] >= 0].tolist())
                         log.info('Ground Truth: \n' + ground_truth)
 
-                        pass_text = 'compliance output: pass'
-                        fail_text = 'compliance output: fail'
+                        pass_text = '<answer>pass</answer>'
+                        fail_text = '<answer>fail</answer>'
+
+                        stripped_output = output.replace(' ', '').replace('\n', '').lower()
+                        stripped_ground_truth = ground_truth.replace(' ', '').replace('\n', '').lower()
 
                         # assuming the ground truth will always have a pass or fail,
                         # this is the default if the model did not follow the format and specify pass or fail
                         classification = 'null'
 
-                        if pass_text in output.lower() and pass_text in ground_truth.lower():
+                        if pass_text in stripped_output and pass_text in stripped_ground_truth:
                             classification = 'true_pass'
-                        if pass_text in output.lower() and fail_text in ground_truth.lower():
+                        if pass_text in stripped_output and fail_text in stripped_ground_truth:
                             classification = 'false_pass'
-                        if fail_text in output.lower() and fail_text in ground_truth.lower():
+                        if fail_text in stripped_output and fail_text in stripped_ground_truth:
                             classification = 'true_fail'
-                        if fail_text in output.lower() and pass_text in ground_truth.lower():
+                        if fail_text in stripped_output and pass_text in stripped_ground_truth:
                             classification = 'false_fail'
 
                         if classification == 'true_pass' or classification == 'true_fail':

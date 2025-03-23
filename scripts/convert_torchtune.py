@@ -105,7 +105,7 @@ Conversation:
                     raise e
                 
                 label = parse_string_list(labels[i])[j]
-                example[OUTPUT_FIELD] = f"{discussion} {explanation} {LABEL_DELIMITER} {label}"
+                example[OUTPUT_FIELD] = f"{COT_OPENING} {discussion} {explanation} {COT_CLOSING} {LABEL_OPENING} {label} {LABEL_CLOSING}"
                 examples.append(example)
 
 
