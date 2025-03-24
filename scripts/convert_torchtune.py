@@ -157,7 +157,7 @@ def main(args):
         if size is not None and len(combined_dataset) > size:
             combined_dataset = combined_dataset.select(range(size))
 
-        file_path = f"{args.data_dir}/{subset}_{split}_{len(combined_dataset)}.jsonl"
+        file_path = f"{args.data_dir}/easy_train_{len(combined_dataset)}.jsonl"
         combined_dataset.to_json(file_path)
         print(f"Combined easy train and validation datasets saved to {file_path}")
         
