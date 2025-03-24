@@ -6,6 +6,7 @@ import datasets
 # These constants are expected by torchtune
 INPUT_FIELD = "input"
 OUTPUT_FIELD = "output"
+ANSWER_FIELD = "answer"
 
 # These constants should match with the system prompt in the config file and with the GRPO constants in Unsloth
 COT_OPENING = "\n<reasoning>"
@@ -106,7 +107,9 @@ Conversation:
                 
                 label = parse_string_list(labels[i])[j]
                 example[OUTPUT_FIELD] = f"{COT_OPENING} {discussion} {explanation} {COT_CLOSING} {LABEL_OPENING} {label} {LABEL_CLOSING}"
+                example[ANSWER_FIELD] = label
                 examples.append(example)
+                
 
 
     torchtune_dataset = datasets.Dataset.from_list(examples)
