@@ -22,7 +22,7 @@ checkpointer:
     model-00002-of-00002.safetensors,
   ]
   recipe_checkpoint: null
-  output_dir: /tmp/output
+  output_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/lora_7500/
   model_type: QWEN2
 resume_from_checkpoint: False
 save_adapter_weights_only: True
