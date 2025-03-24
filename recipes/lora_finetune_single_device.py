@@ -527,7 +527,7 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
         batch_size: int,
         collate_fn: str,
         dataloader_state_dict: Optional[Dict[str, Any]] = None,
-    ) -> StatefulDataLoader:
+    ) -> DataLoader:
         """
         All data related setup happens here. This recipe currently supports only
         map-style datasets. If a state_dict is provided (meaning we are resuming a training run),
@@ -552,14 +552,14 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
             raise RuntimeError("left_pad_sequence collator is only for inference.")
         collate_fn = _get_component_from_path(collate_fn)
 
-        sampler = StatefulDistributedSampler(
+        sampler = DistributedSampler(
             ds,
             num_replicas=1,
             rank=0,
             shuffle=shuffle,
             seed=0,
         )
-        dataloader = StatefulDataLoader(
+        dataloader = DataLoader(
             dataset=ds,
             sampler=sampler,
             batch_size=batch_size,
@@ -619,7 +619,6 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
                     training.EPOCHS_KEY: self.epochs_run,
                     training.TOTAL_EPOCHS_KEY: self.total_epochs,
                     training.MAX_STEPS_KEY: self.max_steps_per_epoch,
-                    training.DATALOADER_KEY: self._dataloader.state_dict(),
                 }
             )
 
@@ -719,7 +718,7 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
         num_tokens = 0
 
         # HACK for qwen
-        if self._tokenizer.__class__.__name__ == 'Qwen2Tokenizer':
+        if 'Qwen' in self._tokenizer.__class__.__name__:
             self._tokenizer.eot_id = self._tokenizer.special_tokens["<|im_end|>"]
             self._tokenizer.start_header_id = self._tokenizer.special_tokens['<|im_start|>']
 
@@ -772,20 +771,23 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
                         ground_truth = self._tokenizer.decode(labels[end_idx:][labels[end_idx:] >= 0].tolist())
                         log.info('Ground Truth: \n' + ground_truth)
 
-                        pass_text = 'compliance output: pass'
-                        fail_text = 'compliance output: fail'
+                        pass_text = '<answer>pass</answer>'
+                        fail_text = '<answer>fail</answer>'
+
+                        stripped_output = output.replace(' ', '').replace('\n', '').lower()
+                        stripped_ground_truth = ground_truth.replace(' ', '').replace('\n', '').lower()
 
                         # assuming the ground truth will always have a pass or fail,
                         # this is the default if the model did not follow the format and specify pass or fail
                         classification = 'null'
 
-                        if pass_text in output.lower() and pass_text in ground_truth.lower():
+                        if pass_text in stripped_output and pass_text in stripped_ground_truth:
                             classification = 'true_pass'
-                        if pass_text in output.lower() and fail_text in ground_truth.lower():
+                        if pass_text in stripped_output and fail_text in stripped_ground_truth:
                             classification = 'false_pass'
-                        if fail_text in output.lower() and fail_text in ground_truth.lower():
+                        if fail_text in stripped_output and fail_text in stripped_ground_truth:
                             classification = 'true_fail'
-                        if fail_text in output.lower() and pass_text in ground_truth.lower():
+                        if fail_text in stripped_output and pass_text in stripped_ground_truth:
                             classification = 'false_fail'
 
                         if classification == 'true_pass' or classification == 'true_fail':
