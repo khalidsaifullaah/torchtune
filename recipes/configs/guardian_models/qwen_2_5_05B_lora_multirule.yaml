@@ -1,6 +1,6 @@
 # Model Arguments
 model:
-  _component_: torchtune.models.qwen2_5.lora_qwen2_5_3b
+  _component_: torchtune.models.qwen2_5.lora_qwen2_5_0_5b
   lora_attn_modules: ['q_proj', 'k_proj', 'v_proj', 'output_proj']
   apply_lora_to_mlp: False
   lora_rank: 16
@@ -10,19 +10,18 @@ model:
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.qwen2_5.qwen2_5_tokenizer
-  path: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/huggingface_base/vocab.json
-  merges_file: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/huggingface_base/merges.txt
+  path: /fs/cml-projects/guardian_models/models/Qwen2.5-0.5B-Instruct/huggingface_base/vocab.json
+  merges_file: /fs/cml-projects/guardian_models/models/Qwen2.5-0.5B-Instruct/huggingface_base/merges.txt
   max_seq_len: null
 
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
-  checkpoint_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/huggingface_base/
+  checkpoint_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-0.5B-Instruct/huggingface_base/
   checkpoint_files: [
-    model-00001-of-00002.safetensors,
-    model-00002-of-00002.safetensors,
+    model.safetensors
   ]
   recipe_checkpoint: null
-  output_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/lora_multirule/
+  output_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-0.5B-Instruct/lora_multirule/
   model_type: QWEN2
 resume_from_checkpoint: False
 save_adapter_weights_only: True
@@ -124,7 +123,7 @@ metric_logger:
   _component_: torchtune.training.metric_logging.WandBLogger
   entity: guardian-models
   project: sft-compliance
-  name: qwen2.5 3b multirule
+  name: qwen2.5 0.5b multirule
 log_every_n_steps: 1
 log_peak_memory_stats: False
 
