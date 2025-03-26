@@ -4,11 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import contextlib
 import mmap
 import sys
 from collections import OrderedDict
 from functools import partial
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Generator, Optional
+from warnings import warn
 
 import torch
 
@@ -22,10 +24,10 @@ _use_low_cpu_ram: bool = False
 def reparametrize_as_dtype_state_dict_post_hook(
     model: nn.Module,
     state_dict: Dict[str, Any],
-    *args: Tuple[Any, ...],
+    *args: Any,
     dtype: torch.dtype = torch.bfloat16,
     offload_to_cpu: bool = True,
-    **kwargs: Dict[Any, Any],
+    **kwargs: Any,
 ):
     """
     A state_dict hook that replaces NF4 tensors with their restored
@@ -45,10 +47,10 @@ def reparametrize_as_dtype_state_dict_post_hook(
     Args:
         model (nn.Module): the model to take ``state_dict()`` on
         state_dict (Dict[str, Any]): the state dict to modify
-        *args (Tuple[Any, ...]): Unused args passed when running this as a state_dict hook.
+        *args (Any): Unused args passed when running this as a state_dict hook.
         dtype (torch.dtype): the dtype to restore the weight to. Default is ``torch.bfloat16``.
         offload_to_cpu (bool): whether to offload the restored weight to CPU. Default is ``True``.
-        **kwargs (Dict[Any, Any]): Unused keyword args passed when running this as a state_dict hook.
+        **kwargs (Any): Unused keyword args passed when running this as a state_dict hook.
     """
     for k, v in state_dict.items():
         if isinstance(v, NF4Tensor):
@@ -57,13 +59,87 @@ def reparametrize_as_dtype_state_dict_post_hook(
                 state_dict[k] = state_dict[k].cpu()
 
 
+def slice_str_to_array(slice_str: str, length: int) -> list[bool]:
+    """
+    Convert a string representing a Python slice or index into a boolean array.
+
+    The resulting array will have the same length as the specified `length` parameter.
+    Each element in the array corresponds to an index in the original sequence,
+    with `True` indicating that the index is included in the slice and `False` otherwise.
+
+    Args:
+        slice_str (str): A string representing a Python slice or index, e.g. "1:3", ":5", "2::3", "0,4,5".
+        length (int): The length of the original sequence.
+
+    Returns:
+        list[bool]: A boolean array representing the slice.
+
+    Examples:
+        >>> slice_str_to_array("1:3", 5)
+        [False, True, True, False, False]
+        >>> slice_str_to_array(":", 5)
+        [True, True, True, True, True]
+        >>> slice_str_to_array("::2", 5)
+        [True, False, True, False, True]
+        >>> slice_str_to_array("1::2", 5)
+        [False, True, False, True, False]
+        >>> slice_str_to_array("2:5:2", 6)
+        [False, False, True, False, True, False]
+        >>> slice_str_to_array("0,4,5", 7)
+        [True, False, False, False, True, True, False]
+    """
+
+    assert "," not in slice_str or ":" not in slice_str, "Cannot mix commas and colons"
+
+    if "," in slice_str:
+        indices = [int(i) for i in slice_str.split(",")]
+        assert all(0 <= i < length for i in indices), "Index out of range"
+        result = [False] * length
+        for i in indices:
+            result[i] = True
+        return result
+
+    parts = slice_str.split(":")
+    assert len(parts) <= 3, "Invalid slice format"
+    start, end, step = None, None, None
+
+    if len(parts) == 1 and parts[0] != "":
+        start = int(parts[0])
+        end = start + 1
+        step = 1
+    elif len(parts) == 2:
+        start = int(parts[0]) if parts[0] != "" else None
+        end = int(parts[1]) if parts[1] != "" else None
+    elif len(parts) == 3:
+        start = int(parts[0]) if parts[0] != "" else None
+        end = int(parts[1]) if parts[1] != "" else None
+        step = int(parts[2]) if parts[2] != "" else None
+
+    assert start is None or 0 <= start < length, "Start index out of range"
+    assert end is None or 0 <= end < length, "End index out of range"
+    assert step is None or step != 0, "Step cannot be zero"
+
+    result = [False] * length
+    slice_indices = range(
+        start if start is not None else 0,
+        end if end is not None else length,
+        step if step is not None else 1,
+    )
+
+    for i in slice_indices:
+        if 0 <= i < length:
+            result[i] = True
+
+    return result
+
+
 def _low_ram_reparametrize_as_dtype_state_dict_post_hook(
     model: nn.Module,
     state_dict: Dict[str, Any],
-    *args: Tuple[Any, ...],
+    *args: Any,
     dtype: torch.dtype = torch.bfloat16,
     offload_to_cpu: bool = True,
-    **kwargs: Dict[Any, Any],
+    **kwargs: Any,
 ):
     """
     A state_dict hook that replaces NF4 tensors with their restored
@@ -86,10 +162,10 @@ def _low_ram_reparametrize_as_dtype_state_dict_post_hook(
     Args:
         model (nn.Module): the model to take ``state_dict()`` on
         state_dict (Dict[str, Any]): the state dict to modify
-        *args (Tuple[Any, ...]): Unused args passed when running this as a state_dict hook.
+        *args (Any): Unused args passed when running this as a state_dict hook.
         dtype (torch.dtype): the dtype to restore the weight to. Default is ``torch.bfloat16``.
         offload_to_cpu (bool): whether to offload the restored weight to CPU. Default is ``True``.
-        **kwargs (Dict[Any, Any]): Unused keyword args passed when running this as a state_dict hook.
+        **kwargs (Any): Unused keyword args passed when running this as a state_dict hook.
     """
     # Create a state dict of FakeTensors that matches the state_dict
     mode = FakeTensorMode()
@@ -147,11 +223,7 @@ def _register_reparametrize_state_dict_hooks(
         RuntimeError: If the low RAM reparametrize hook is used on Windows or an incompatible torch version.
     """
     if _use_low_cpu_ram:
-        if torch.__version__ < "2.5.0.dev20240906":
-            raise RuntimeError(
-                "Low RAM reparametrize_as_dtype_state_dict_post_hook requires PyTorch 2.5.0.dev20240906 or later."
-            )
-        elif sys.platform == "win32":
+        if sys.platform == "win32":
             # mmap.MAP_SHARED is not supported on Windows but this change targets colab.
             raise RuntimeError(
                 "Low RAM reparametrize_as_dtype_state_dict_post_hook is not supported on Windows."
@@ -163,3 +235,210 @@ def _register_reparametrize_state_dict_hooks(
     module._register_state_dict_hook(
         partial(hook, dtype=dtype, offload_to_cpu=offload_to_cpu)
     )
+
+
+@contextlib.contextmanager
+def disable_kv_cache(model: nn.Module) -> Generator[None, None, None]:
+    """
+    This context manager temporarily disables KV-cacheing on a given model, which must already
+    already have KV-caches setup. All forward passes using the model within this context manager
+    will not use KV-caches.
+
+    KV-caches will be disabled when entering the context manager, and will be enabled upon exit,
+    without being modified.
+
+    This is useful in cases where we might wish to alternate between model calls which use KV-cacheing,
+    and model calls which do not use KV-cacheing, without the additional overhead of deleting and setting caches up
+    every time.
+
+    Example:
+        >>> from torchtune.models.llama3_2 import llama3_2_1b
+        >>> from torchtune.modules import disable_kv_cache
+        >>> import torch
+        >>> model = llama3_2_1b()
+        >>> # setup caches
+        >>> model.setup_caches(batch_size=1,
+        >>>                     dtype=torch.float32,
+        >>>                     decoder_max_seq_len=1024)
+        >>> print(model.caches_are_setup())
+        True
+        >>> print(model.caches_are_enabled())
+        True
+        >>> print(model.layers[0].attn.kv_cache)
+        KVCache()
+        >>> # now temporarily disable caches
+        >>> with disable_kv_cache(model):
+        >>>     print(model.caches_are_setup())
+        True
+        >>>     print(model.caches_are_enabled())
+        False
+        >>>     print(model.layers[0].attn.kv_cache)
+        KVCache()
+        >>> # caches are now re-enabled, and their state is untouched
+        >>> print(model.caches_are_setup())
+        True
+        >>> print(model.caches_are_enabled())
+        True
+        >>> print(model.layers[0].attn.kv_cache)
+        KVCache()
+
+    Args:
+        model (nn.Module): model to disable KV-cacheing for.
+
+    Yields:
+        None: Returns control to the caller with KV-caches disabled on the given model.
+
+    Raises:
+        ValueError: If the model does not have caches setup. Use :func:`~torchtune.modules.TransformerDecoder.setup_caches` to
+            setup caches first.
+    """
+    if not model.caches_are_setup():
+        raise ValueError(
+            "Model caches must be setup before calling disable_kv_cache! "
+            "Please use model.setup_caches() to setup model caches."
+        )
+    if not model.caches_are_enabled():
+        warn(
+            "You are using disable_kv_cache with a model that does not "
+            "have caches enabled. This is a no-op and the expected behaviour "
+            "may not occur."
+        )
+    for module in model.modules():
+        if hasattr(module, "kv_cache") and callable(module.kv_cache):
+            module.cache_enabled = False
+    try:
+        yield
+    finally:
+        for module in model.modules():
+            if hasattr(module, "kv_cache") and callable(module.kv_cache):
+                module.cache_enabled = True
+
+
+@contextlib.contextmanager
+def local_kv_cache(
+    model: nn.Module,
+    *,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    encoder_max_seq_len: Optional[int] = None,
+    decoder_max_seq_len: Optional[int] = None,
+) -> Generator[None, None, None]:
+    """
+    This context manager temporarily enables KV-cacheing on a given model, which does not
+    already have KV-caches setup. All forward passes using the model within this context manager
+    will use KV-caches.
+
+    KV-caches will be set-up with the given ``batch_size``, ``dtype``, and ``max_seq_len`` when
+    entering the context manager, and will be deleted on exit.
+
+    Example:
+        >>> from torchtune.models.llama3_2 import llama3_2_1b
+        >>> from torchtune.modules import local_kv_cache
+        >>> import torch
+        >>> model = llama3_2_1b()
+        >>> print(model.caches_are_setup())
+        False
+        >>> print(model.caches_are_enabled())
+        False
+        >>> print(model.layers[0].attn.kv_cache)
+        None
+        >>> # entering cacheing mode
+        >>> with local_kv_cache(model,
+        >>>                     batch_size=1,
+        >>>                     device=torch.device("cpu"),
+        >>>                     dtype=torch.float32,
+        >>>                     decoder_max_seq_len=1024):
+        >>>     print(model.caches_are_setup())
+        True
+        >>>     print(model.caches_are_enabled())
+        True
+        >>>     print(model.layers[0].attn.kv_cache)
+        KVCache()
+        >>> # exited cacheing mode
+        >>> print(model.caches_are_setup())
+        False
+        >>> print(model.caches_are_enabled())
+        False
+        >>> print(model.layers[0].attn.kv_cache)
+        None
+
+    Args:
+        model (nn.Module): model to enable KV-cacheing for.
+        batch_size (int): batch size for the caches.
+        device (torch.device): device to setup caches on. this should be the same device
+            the model is on.
+        dtype (torch.dtype): dtype for the caches.
+        encoder_max_seq_len (Optional[int]): maximum encoder cache sequence length.
+        decoder_max_seq_len (Optional[int]): maximum decoder cache sequence length.
+
+    Yields:
+        None: Returns control to the caller with KV-caches setup and enabled on the given model.
+
+    Raises:
+        ValueError: If the model already has caches setup.
+            You may use :func:`~torchtune.modules.common_utils.delete_kv_caches` to delete existing caches.
+    """
+    if model.caches_are_setup():
+        raise ValueError(
+            "Model caches must be not setup prior to entering this context manager! "
+            "Please use delete_kv_caches(model) to delete model caches."
+        )
+    # ensure caches are setup on the same device as the model
+    with device:
+        model.setup_caches(
+            batch_size,
+            dtype,
+            encoder_max_seq_len=encoder_max_seq_len,
+            decoder_max_seq_len=decoder_max_seq_len,
+        )
+    try:
+        yield
+    finally:
+        delete_kv_caches(model)
+
+
+def delete_kv_caches(model: nn.Module):
+    """
+    Deletes KV caches from all attention layers in a model,
+    and also ensures ``cache_enabled`` is set to False.
+
+    Example:
+        >>> from torchtune.models.llama3_2 import llama3_2_1b
+        >>> from torchtune.modules import delete_kv_caches
+        >>> import torch
+        >>> model = llama3_2_1b()
+        >>> model.setup_caches(batch_size=1,
+        >>>                     dtype=torch.float32,
+        >>>                     decoder_max_seq_len=1024)
+        >>> print(model.caches_are_setup())
+        True
+        >>> print(model.caches_are_enabled())
+        True
+        >>> print(model.layers[0].attn.kv_cache)
+        KVCache()
+        >>> delete_kv_caches(model)
+        >>> print(model.caches_are_setup())
+        False
+        >>> print(model.caches_are_enabled())
+        False
+        >>> print(model.layers[0].attn.kv_cache)
+        None
+
+    Args:
+        model (nn.Module): model to enable KV-cacheing for.
+
+    Raises:
+        ValueError: if this function is called on a model which does not have
+            caches setup. Use :func:`~torchtune.modules.TransformerDecoder.setup_caches` to
+            setup caches first.
+    """
+    if not model.caches_are_setup():
+        raise ValueError(
+            "You have tried to delete model caches, but model.caches_are_setup() "
+            "is False! Please setup caches on the model first."
+        )
+    for module in model.modules():
+        if hasattr(module, "kv_cache") and callable(module.kv_cache):
+            module.cache_enabled = False
+            module.kv_cache = None

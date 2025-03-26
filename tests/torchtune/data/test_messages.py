@@ -9,6 +9,7 @@ from unittest import mock
 import pytest
 
 from PIL import Image
+from tests.common import ASSETS
 from tests.test_utils import (
     assert_dialogue_equal,
     CHAT_SAMPLE,
@@ -23,6 +24,8 @@ from torchtune.data._messages import (
     ShareGPTToMessages,
     validate_messages,
 )
+
+PYTORCH_RGB_IMAGE_AS_PIL = Image.open(ASSETS / "rgb_pytorch.png")
 
 
 class TestMessage:
@@ -105,6 +108,60 @@ class TestInputOutputToMessages:
             "maybe_input": "hello world",
             "maybe_output": "hello world",
         }
+
+    @pytest.mark.parametrize(
+        "input_image, expected_image",
+        [
+            ("rgb_pytorch.png", PYTORCH_RGB_IMAGE_AS_PIL),
+            (ASSETS / "rgb_pytorch.png", PYTORCH_RGB_IMAGE_AS_PIL),
+            (PYTORCH_RGB_IMAGE_AS_PIL, PYTORCH_RGB_IMAGE_AS_PIL),
+        ],
+    )
+    def test_call_with_image(self, sample, input_image, expected_image):
+        # Add the image to the sample
+        sample["image"] = input_image
+
+        # Create the transform
+        transform = InputOutputToMessages(
+            column_map={
+                "input": "maybe_input",
+                "output": "maybe_output",
+                "image": "image",
+            },
+            # Need to test if the image_dir is properly joined w/ image
+            image_dir=ASSETS if isinstance(input_image, str) else None,
+        )
+        actual = transform(sample)
+        expected = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "content": "hello world"},
+                    {"type": "image", "content": expected_image},
+                ],
+                masked=True,
+                eot=True,
+            ),
+            Message(role="assistant", content="hello world", masked=False, eot=True),
+        ]
+        assert_dialogue_equal(actual["messages"], expected)
+
+    def test_call_with_image_fails_when_bad_image_inputs_are_passed(self, sample):
+        # Construct a bad column_map without an 'image' key
+        column_map = {
+            "input": "maybe_input",
+            "output": "maybe_output",
+        }
+
+        # Create a transform that expects an image column
+        with pytest.raises(
+            ValueError,
+            match="Please specify an 'image' key in column_map",
+        ):
+            transform = InputOutputToMessages(
+                column_map=column_map,
+                image_dir=ASSETS,
+            )
 
     def test_call(self, sample):
         transform = InputOutputToMessages(
@@ -415,11 +472,48 @@ class TestOpenAIToMessages:
                         {"type": "text", "content": CHAT_SAMPLE["user"]},
                         {"type": "image", "content": test_img},
                     ],
+                    masked=True,
                 ),
                 MESSAGE_SAMPLE[2],
             ],
         )
         mock_load_image.assert_called_once_with("https://example.com")
+
+    def test_call_tool_messages(self):
+        tool_samples = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Available functions: weather(city: str), search(query: str)",
+                },
+                {"role": "user", "content": "What's the weather in Istanbul?"},
+                {"role": "assistant", "content": "weather(city='Istanbul')"},
+                {"role": "tool", "content": "{'temperature': 25}"},
+                {
+                    "role": "assistant",
+                    "content": "The temperature in Istanbul is 25°C.",
+                },
+            ]
+        }
+        transform = OpenAIToMessages()
+        converted_messages = transform(tool_samples)
+        assert_dialogue_equal(
+            converted_messages["messages"],
+            [
+                Message(
+                    role="system",
+                    content="Available functions: weather(city: str), search(query: str)",
+                ),
+                Message(role="user", content="What's the weather in Istanbul?"),
+                Message(role="assistant", content="weather(city='Istanbul')"),
+                Message(
+                    role="tool", content="{'temperature': 25}", eot=False, masked=True
+                ),
+                Message(
+                    role="assistant", content="The temperature in Istanbul is 25°C."
+                ),
+            ],
+        )
 
 
 def test_validate_messages():
@@ -434,6 +528,19 @@ def test_validate_messages():
 
     # Test valid conversation without system
     validate_messages(messages[1:])
+
+    # Test valid conversation with tool
+    messages = [
+        Message(
+            role="system",
+            content="Available functions: weather(city: str), search(query: str)",
+        ),
+        Message(role="user", content="What is the weather in Istanbul?"),
+        Message(role="assistant", content="weather(city='Istanbul')", ipython=True),
+        Message(role="tool", content="{'temperature': 25}"),
+        Message(role="assistant", content="The weather in Istanbul is 25C"),
+    ]
+    validate_messages(messages)
 
     # Test system not first
     messages = [
@@ -482,6 +589,18 @@ def test_validate_messages():
     ]
     with pytest.raises(
         ValueError,
-        match="Assistant message before expected user message at index 0 in messages",
+        match="Assistant message before expected user, tool or ipython message at index 0 in messages",
+    ):
+        validate_messages(messages)
+
+    # # Test tool message before ipython message
+    messages = [
+        Message(role="user", content="get weather for istanbul"),
+        Message(role="assistant", content="get_weather(city='Istanbul')"),
+        Message(role="ipython", content="{'temperature': 25}"),
+    ]
+    with pytest.raises(
+        ValueError,
+        match="Tool or ipython message at index 2 must follow an ipython message",
     ):
         validate_messages(messages)

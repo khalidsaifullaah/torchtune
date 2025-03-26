@@ -22,7 +22,26 @@ if _SUPPORTS_FLEX_ATTENTION:
         flex_attention,
     )
 
-    flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
+    def compile_flex_attention():
+        try:
+            return torch.compile(flex_attention, dynamic=False)
+        except Exception as e:
+            # It may fail on some combinations of hardware/versions. Using max-autotune fixes this issue.
+            # Context: https://github.com/pytorch/torchtune/issues/2113
+            _log.info(
+                f"Compiling flex_attention failed with error '{e}'. Retrying with mode='max-autotune'."
+            )
+            try:
+                return torch.compile(flex_attention, dynamic=False, mode="max-autotune")
+            except Exception as e:
+                _log.info(
+                    f"Compiling flex_attention failed with error: '{e}', "
+                    "Updating your pytorch version to nightlies may solve it, or you can set"
+                    "in your config dataset.packed=False to avoid using flex attention."
+                )
+                raise
+
+    flex_attention_compiled = compile_flex_attention()
 
     # We cannot do nested compile, but flex attention only has perf benefits
     # when compiled. To insulate it from the compiler, we wrap it with
@@ -115,9 +134,9 @@ def packed_block_causal_mask(
     seq_lens: List[torch.Tensor],
 ) -> _MaskType:
     """
-    Create a block causal document mask for a batch of packed sequences. If on
-    torch version >= 2.5.0, this is done by creating a mask_mod function with the
-    block causal logic and passing this into :func:`torch.nn.attention.flex_attention.create_block_mask`.
+    Create a block causal document mask for a batch of packed sequences. If
+    flex attention is supported by the current hardware, block causal logic and
+    passing this into :func:`torch.nn.attention.flex_attention.create_block_mask`.
     The resultant BlockMask is a compressed representation of the full block causal
     mask. If on an older version, a standard 2D block causal mask is created and returned.
 

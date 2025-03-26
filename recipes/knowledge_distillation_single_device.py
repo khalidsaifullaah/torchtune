@@ -8,7 +8,7 @@ import sys
 import time
 
 from functools import partial
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Union
 from warnings import warn
 
 import torch
@@ -17,21 +17,21 @@ from omegaconf import DictConfig, ListConfig
 
 from torch import nn
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader, DistributedSampler
+from torchdata.stateful_dataloader import StatefulDataLoader
+from torchdata.stateful_dataloader.sampler import StatefulDistributedSampler
 from torchtune import config, modules, training, utils
-from torchtune.data import padded_collate_sft
+from torchtune.data import padded_collate_packed, padded_collate_sft
 from torchtune.datasets import ConcatDataset
 from torchtune.modules.peft import (
     get_adapter_params,
+    get_adapter_state_dict,
     get_lora_module_names,
     get_merged_lora_ckpt,
-    load_dora_magnitudes,
     set_trainable_params,
     validate_missing_and_unexpected_for_lora,
 )
 from torchtune.recipe_interfaces import FTRecipeInterface
 from torchtune.training import DummyProfiler, PROFILER_KEY
-
 from tqdm import tqdm
 
 log = utils.get_logger("DEBUG")
@@ -120,9 +120,17 @@ class KDRecipeSingleDevice(FTRecipeInterface):
         self._log_every_n_steps = cfg.get("log_every_n_steps", 1)
         self._log_peak_memory_stats = cfg.get("log_peak_memory_stats", False)
 
+        if self._log_peak_memory_stats and self._device.type == "cpu":
+            log.info(
+                "log_peak_memory_stats was set to True, however, training uses cpu. Setting log_peak_memory_stats=False."
+            )
+            self._log_peak_memory_stats = False
+
         # These are public properties which are updated by the checkpoint loader
         # when ``resume_from_checkpoint`` is `True` or validated in tests
-        self.seed = training.set_seed(seed=cfg.seed)
+        self.seed = training.set_seed(
+            seed=cfg.seed, debug_mode=cfg.get("cudnn_deterministic_mode", None)
+        )
         self.epochs_run = 0
         self.total_epochs = cfg.epochs
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
@@ -141,7 +149,7 @@ class KDRecipeSingleDevice(FTRecipeInterface):
         """
         self._checkpointer = config.instantiate(
             cfg_checkpointer,
-            resume_from_checkpoint=self._resume_from_checkpoint,
+            should_load_recipe_state=self._resume_from_checkpoint,
         )
         checkpoint_dict = self._checkpointer.load_checkpoint()
 
@@ -213,10 +221,16 @@ class KDRecipeSingleDevice(FTRecipeInterface):
 
         self._metric_logger = config.instantiate(cfg.metric_logger)
 
+        ckpt_dict = self.load_checkpoint(cfg.checkpointer)
+
         # log config with parameter override
         self._metric_logger.log_config(cfg)
 
         self._compile = cfg.compile
+        if cfg.device == "npu" and cfg.compile:
+            raise ValueError(
+                "NPU does not support model compilation. Please set `compile: False` in the config."
+            )
         checkpoint_dict = self.load_checkpoint(cfg_checkpointer=cfg.checkpointer)
         teacher_checkpoint_dict = self.load_teacher_checkpoint(
             cfg_checkpointer=cfg.teacher_checkpointer
@@ -273,10 +287,15 @@ class KDRecipeSingleDevice(FTRecipeInterface):
 
         # Dataloader depends on the tokenizer and loss_fn and should be
         # setup after all of these are setup
-        self._sampler, self._dataloader = self._setup_data(
+        self._dataloader = self._setup_data(
             cfg_dataset=cfg.dataset,
-            shuffle=cfg.shuffle,
             batch_size=cfg.batch_size,
+            shuffle=cfg.shuffle,
+            dataloader_state_dict=(
+                ckpt_dict[training.DATALOADER_KEY]
+                if self._resume_from_checkpoint
+                else None
+            ),
         )
 
         # Finally update the recipe state which can only be correctly set after all of the
@@ -414,7 +433,9 @@ class KDRecipeSingleDevice(FTRecipeInterface):
         # This is for any adapters that need to be initialized after base weights
         # have been loaded (e.g. DoRA).
         if self._is_dora:
-            load_dora_magnitudes(model)
+            for m in model.modules():
+                if hasattr(m, "initialize_dora_magnitude"):
+                    m.initialize_dora_magnitude()
         if lora_weights_state_dict:
             lora_missing, lora_unexpected = model.load_state_dict(
                 lora_weights_state_dict, strict=False
@@ -437,11 +458,14 @@ class KDRecipeSingleDevice(FTRecipeInterface):
             self.adapter_params.items(), dtype=self._dtype
         )
 
-        log.info(f"Model is initialized with precision {self._dtype}.")
+        log.info(f"Student model is initialized with precision {self._dtype}.")
 
-        if self._device.type == "cuda":
+        if self._device.type != "cpu":
+            log.info("Memory stats initializing student model:")
             memory_stats = training.get_memory_stats(device=self._device)
-            training.log_memory_stats(memory_stats)
+            training.log_memory_stats(
+                memory_stats, message="Memory stats after student model init:"
+            )
         return model
 
     def _setup_teacher_model(
@@ -464,6 +488,13 @@ class KDRecipeSingleDevice(FTRecipeInterface):
             model.named_parameters(), dtype=self._dtype
         )
         log.info(f"Teacher model is initialized with precision {self._dtype}.")
+
+        if self._device.type != "cpu":
+            memory_stats = training.get_memory_stats(device=self._device)
+            training.log_memory_stats(
+                memory_stats, message="Memory stats after teacher model init:"
+            )
+
         return model
 
     def _setup_optimizer(
@@ -497,11 +528,12 @@ class KDRecipeSingleDevice(FTRecipeInterface):
         cfg_dataset: DictConfig,
         shuffle: bool,
         batch_size: int,
-    ) -> Tuple[DistributedSampler, DataLoader]:
+        dataloader_state_dict: Optional[Dict[str, Any]] = None,
+    ) -> StatefulDataLoader:
         """
-        All data related setup happens here. Currently this recipe only supports
-        Map-style Datasets which fit into memory and an option for random shuffling.
-        Samplers, iterable datasets, and streaming datasets are not supported.
+        All data related setup happens here. This recipe currently supports only
+        map-style datasets. If a state_dict is provided (meaning we are resuming a training run),
+        it is loaded into the dataloader.
         """
         if isinstance(cfg_dataset, ListConfig):
             datasets = [
@@ -509,24 +541,22 @@ class KDRecipeSingleDevice(FTRecipeInterface):
                 for single_cfg_dataset in cfg_dataset
             ]
             ds = ConcatDataset(datasets=datasets)
-            packed = False
+            packed = getattr(ds, "packed", False)
         else:
             ds = config.instantiate(cfg_dataset, self._tokenizer)
             packed = cfg_dataset.get("packed", False)
 
-        sampler = DistributedSampler(
+        sampler = StatefulDistributedSampler(
             ds,
             num_replicas=1,
             rank=0,
             shuffle=shuffle,
             seed=0,
         )
-        dataloader = DataLoader(
+        dataloader = StatefulDataLoader(
             dataset=ds,
-            sampler=sampler,
             batch_size=batch_size,
-            # dropping last avoids shape issues with compile + flex attention
-            drop_last=True,
+            sampler=sampler,
             collate_fn=(
                 partial(
                     padded_collate_sft,
@@ -534,13 +564,13 @@ class KDRecipeSingleDevice(FTRecipeInterface):
                     ignore_idx=self._loss_fn.ignore_index,
                 )
                 if not packed
-                else None
+                else padded_collate_packed
             ),
+            # dropping last avoids shape issues with compile + flex attention
+            drop_last=True,
         )
 
-        log.info("Dataset and Sampler are initialized.")
-
-        return sampler, dataloader
+        return dataloader
 
     def save_checkpoint(self, epoch: int) -> None:
         """
@@ -565,6 +595,7 @@ class KDRecipeSingleDevice(FTRecipeInterface):
                     training.EPOCHS_KEY: self.epochs_run,
                     training.TOTAL_EPOCHS_KEY: self.total_epochs,
                     training.MAX_STEPS_KEY: self.max_steps_per_epoch,
+                    training.DATALOADER_KEY: self._dataloader.state_dict(),
                 }
             )
 
@@ -580,10 +611,7 @@ class KDRecipeSingleDevice(FTRecipeInterface):
         ckpt_dict.update({training.MODEL_KEY: merged_state_dict})
 
         # Construct the adapter weights
-        adapter_key_filter = lambda x: x in self.adapter_params
-        adapter_state_dict = {
-            k: v for k, v in self._model.state_dict().items() if adapter_key_filter(k)
-        }
+        adapter_state_dict = get_adapter_state_dict(self._model.state_dict())
         ckpt_dict.update({training.ADAPTER_KEY: adapter_state_dict})
         adapter_config = {
             "r": self._lora_rank,
@@ -662,111 +690,117 @@ class KDRecipeSingleDevice(FTRecipeInterface):
         running_kd_loss = 0
         num_tokens = 0
 
-        with self._profiler as prof:
-            # self.epochs_run should be non-zero when we're resuming from a checkpoint
-            for curr_epoch in range(self.epochs_run, self.total_epochs):
-                # Update the sampler to ensure data is correctly shuffled across epochs
-                # in case shuffle is True
-                self._sampler.set_epoch(curr_epoch)
+        self._profiler.start()
+        # self.epochs_run should be non-zero when we're resuming from a checkpoint
+        for curr_epoch in range(self.epochs_run, self.total_epochs):
+            pbar = tqdm(total=self._steps_per_epoch)
+            self._dataloader.sampler.set_epoch(curr_epoch)
+            for idx, batch in enumerate(self._dataloader):
 
-                pbar = tqdm(total=self._steps_per_epoch)
-                for idx, batch in enumerate(self._dataloader):
-                    if (
-                        self.max_steps_per_epoch is not None
-                        and (idx // self._gradient_accumulation_steps)
-                        == self.max_steps_per_epoch
-                    ):
-                        break
+                # Start tracking CUDA memory for active steps for just the first epoch
+                if (
+                    curr_epoch == 0
+                    and self.profiler_profile_memory
+                    and idx == self.profiler_wait_steps + self.profiler_warmup_steps
+                    and self._device.type == "cuda"
+                ):
+                    torch.cuda.memory._record_memory_history()
 
-                    # Start tracking CUDA memory for active steps for just the first epoch
-                    if (
-                        curr_epoch == 0
-                        and self.profiler_profile_memory
-                        and idx == self.profiler_wait_steps + self.profiler_warmup_steps
-                    ):
-                        torch.cuda.memory._record_memory_history()
+                batch = {k: v.to(self._device) for k, v in batch.items()}
 
-                    batch = {k: v.to(self._device) for k, v in batch.items()}
-                    num_tokens += batch["tokens"].numel()
+                # Calculate the number of unmasked tokens in the current batch
+                # and increment the total number of tokens seen in the step
+                current_num_tokens = (
+                    batch["labels"] != self._loss_fn.ignore_index
+                ).sum()
+                num_tokens += current_num_tokens
 
-                    class_loss, kd_loss = self._loss_step(batch)
-                    loss = (1 - self._kd_ratio) * class_loss + self._kd_ratio * kd_loss
-                    loss = loss / self._gradient_accumulation_steps
-                    running_class_loss += class_loss / self._gradient_accumulation_steps
-                    running_kd_loss += kd_loss / self._gradient_accumulation_steps
-                    loss.backward()
+                class_loss, kd_loss = self._loss_step(batch)
+                running_class_loss += class_loss * current_num_tokens
+                running_kd_loss += kd_loss * current_num_tokens
+                current_loss = (
+                    1 - self._kd_ratio
+                ) * class_loss + self._kd_ratio * kd_loss
+                current_loss.backward()
 
-                    # Step with optimizer
-                    if (idx + 1) % self._gradient_accumulation_steps == 0:
-                        if self._clip_grad_norm is not None:
-                            grad_norm = torch.nn.utils.clip_grad_norm_(
-                                self._model.parameters(),
-                                max_norm=float(self._clip_grad_norm),
+                # Step with optimizer
+                if (idx + 1) % self._gradient_accumulation_steps == 0:
+                    training.scale_grads(self._model, 1 / num_tokens)
+                    if self._clip_grad_norm is not None:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            self._model.parameters(),
+                            max_norm=float(self._clip_grad_norm),
+                        )
+                    self._optimizer.step()
+                    self._optimizer.zero_grad(set_to_none=True)
+                    self._lr_scheduler.step()
+                    # Update the number of steps when the weights are updated
+                    self.global_step += 1
+
+                    class_loss_to_log = running_class_loss.item() / num_tokens
+                    kd_loss_to_log = running_kd_loss.item() / num_tokens
+                    loss_to_log = (
+                        1 - self._kd_ratio
+                    ) * class_loss_to_log + self._kd_ratio * kd_loss_to_log
+                    pbar.update(1)
+                    pbar.set_description(
+                        f"{curr_epoch + 1}|{self.global_step}|Loss: {loss_to_log}"
+                    )
+
+                    # Log per-step metrics
+                    if self.global_step % self._log_every_n_steps == 0:
+                        time_per_step = time.perf_counter() - t0
+                        log_dict = {
+                            "loss": loss_to_log,
+                            "class_loss": class_loss_to_log,
+                            "kd_loss": kd_loss_to_log,
+                            "lr": self._optimizer.param_groups[0]["lr"],
+                            "tokens_per_second_per_gpu": num_tokens / time_per_step,
+                        }
+                        if self._device.type != "cpu" and self._log_peak_memory_stats:
+                            log_dict.update(
+                                training.get_memory_stats(device=self._device)
                             )
-                        self._optimizer.step()
-                        self._optimizer.zero_grad(set_to_none=True)
-                        self._lr_scheduler.step()
-                        # Update the number of steps when the weights are updated
-                        self.global_step += 1
-
-                        class_loss_to_log = running_class_loss.item()
-                        kd_loss_to_log = running_kd_loss.item()
-                        loss_to_log = (
-                            1 - self._kd_ratio
-                        ) * class_loss_to_log + self._kd_ratio * kd_loss_to_log
-                        pbar.update(1)
-                        pbar.set_description(
-                            f"{curr_epoch + 1}|{self.global_step}|Loss: {loss_to_log}"
+                        if self._clip_grad_norm is not None:
+                            log_dict.update({"grad_norm": grad_norm})
+                        self._metric_logger.log_dict(
+                            log_dict,
+                            step=self.global_step,
                         )
 
-                        # Log per-step metrics
-                        if self.global_step % self._log_every_n_steps == 0:
-                            time_per_step = time.perf_counter() - t0
-                            log_dict = {
-                                "loss": loss_to_log,
-                                "class_loss": class_loss_to_log,
-                                "kd_loss": kd_loss_to_log,
-                                "lr": self._optimizer.param_groups[0]["lr"],
-                                "tokens_per_second_per_gpu": num_tokens / time_per_step,
-                            }
-                            if (
-                                self._device.type == "cuda"
-                                and self._log_peak_memory_stats
-                            ):
-                                log_dict.update(
-                                    training.get_memory_stats(device=self._device)
-                                )
-                            if self._clip_grad_norm is not None:
-                                log_dict.update({"grad_norm": grad_norm})
-                            self._metric_logger.log_dict(
-                                log_dict,
-                                step=self.global_step,
-                            )
+                    # Reset running stats for the next step
+                    running_class_loss = 0
+                    running_kd_loss = 0
+                    num_tokens = 0
+                    t0 = time.perf_counter()
 
-                        # Reset running stats for the next step
-                        running_class_loss = 0
-                        running_kd_loss = 0
-                        num_tokens = 0
-                        t0 = time.perf_counter()
+                # Stop tracking CUDA memory now that active steps are complete
+                if (
+                    curr_epoch == 0
+                    and self.profiler_profile_memory
+                    and idx
+                    == self.profiler_wait_steps
+                    + self.profiler_warmup_steps
+                    + self.profiler_active_steps
+                    and self._device.type == "cuda"
+                ):
+                    torch.cuda.memory._record_memory_history(enabled=None)
 
-                    # Stop tracking CUDA memory now that active steps are complete
-                    if (
-                        curr_epoch == 0
-                        and self.profiler_profile_memory
-                        and idx
-                        == self.profiler_wait_steps
-                        + self.profiler_warmup_steps
-                        + self.profiler_active_steps
-                    ):
-                        torch.cuda.memory._record_memory_history(enabled=None)
+                # Step the profiler
+                # Note we are stepping each batch, which might not include optimizer step in the trace
+                # if the schedule cycle doesn't align with gradient accumulation.
+                self._profiler.step()
 
-                    # Step the profiler
-                    # Note we are stepping each batch, which might not include optimizer step in the trace
-                    # if the schedule cycle doesn't align with gradient accumulation.
-                    prof.step()
+                # Check if we should stop training for this epoch
+                if (
+                    (idx + 1) // self._gradient_accumulation_steps
+                ) == self.max_steps_per_epoch:
+                    break
 
-                self.epochs_run += 1
-                self.save_checkpoint(epoch=curr_epoch)
+            self.epochs_run += 1
+            self.save_checkpoint(epoch=curr_epoch)
+
+        self._profiler.stop()
 
     def cleanup(self) -> None:
         self._metric_logger.close()

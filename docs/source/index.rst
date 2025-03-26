@@ -85,6 +85,13 @@ torchtune tutorials.
    :link: tutorials/llama_kd_tutorial.html
    :tags: finetuning,llama3,kd
 
+.. customcarditem::
+   :header: Multi-node training w/ Llama3.3 70B
+   :card_description: Fine-tuning a large model on 2+ nodes
+   :image: _static/img/generic-pytorch-logo.png
+   :link: tutorials/multinode.html
+   :tags: multinode,llama3,slurm
+
 .. customcardend::
 
 
@@ -113,6 +120,7 @@ torchtune tutorials.
    recipes/recipes_overview
    recipes/lora_finetune_single_device
    recipes/qat_distributed
+   recipes/dpo
 
 .. toctree::
    :glob:
@@ -131,6 +139,8 @@ torchtune tutorials.
    basics/message_transforms
    basics/tokenizers
    basics/prompt_templates
+   basics/packing
+   basics/custom_components
 
 .. toctree::
    :glob:
@@ -144,9 +154,9 @@ torchtune tutorials.
    tutorials/qlora_finetune
    tutorials/qat_finetune
    tutorials/e2e_flow
-   tutorials/datasets
-   tutorials/memory_optimizations
    tutorials/llama_kd_tutorial
+   tutorials/memory_optimizations
+   tutorials/multinode
 
 .. toctree::
    :glob:

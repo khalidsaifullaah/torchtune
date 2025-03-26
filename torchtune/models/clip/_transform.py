@@ -156,13 +156,14 @@ class CLIPImageTransform:
                 "aspect_ratio" field.
         """
         image = sample["image"]
-        assert isinstance(image, Image.Image), "Input image must be a PIL image."
+        assert isinstance(
+            image, (Image.Image, torch.Tensor)
+        ), "Input image must be a PIL image or a torch.Tensor."
 
         # Make image torch.tensor((3, H, W), dtype=dtype), 0<=values<=1
-        if hasattr(image, "mode") and image.mode == "RGBA":
+        if isinstance(image, Image.Image) and image.mode != "RGB":
             image = image.convert("RGB")
         image = F.to_image(image)
-        image = F.grayscale_to_rgb_image(image)
         image = F.to_dtype(image, dtype=self.dtype, scale=True)
 
         # Find the best canvas to fit the image without distortion

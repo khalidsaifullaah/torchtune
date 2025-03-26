@@ -7,7 +7,7 @@
 import sys
 import time
 from functools import partial
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Union
 from warnings import warn
 
 import torch
@@ -15,14 +15,15 @@ from omegaconf import DictConfig, ListConfig
 
 from torch import nn
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader, DistributedSampler
-
+from torchdata.stateful_dataloader import StatefulDataLoader
+from torchdata.stateful_dataloader.sampler import StatefulDistributedSampler
 from torchtune import config, modules, training, utils
 from torchtune.config._utils import _get_component_from_path
 from torchtune.data import padded_collate_packed
 from torchtune.datasets import ConcatDataset
 from torchtune.recipe_interfaces import FTRecipeInterface
 from torchtune.training import DummyProfiler, PROFILER_KEY
+from torchtune.training.lr_schedulers import get_lr
 
 from tqdm import tqdm
 
@@ -36,12 +37,24 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
     for single GPU training. Training on CPU is not supported.
 
     Features:
-        - Activation Checkpointing. This can be controlled using the ``activation_checkpointing``
+        - Activation Checkpointing. This can be controlled using the ``enable_activation_checkpointing``
             flag. Activation checkpointing helps reduce the memory footprint since we no longer keep
             activations in memory and instead recompute them during the backward pass. This is especially
             helpful for larger batch sizes when you're memory constrained. But these savings in memory
             come at the cost of training performance. In most cases training can slow-down quite a bit as
             a result of this activation recomputation.
+
+        - Activation Offloading. This can be controlled using the ``enable_activation_offloading``
+            flag. Activation offloading is a technique similar to activations checkpointing that helps
+            reduce the memory footprint to prevent OOMs on CUDA and enable bigger batches. Where activations
+            checkpointing drops the activation in the forward to recompute it later in the backward,
+            activations offloading will drop the activation in the forward to the CPU and bring it
+            back during the backward pass. As always, there is a tradeoff--these savings in memory can
+            come at the cost of training performance and CPU resources. To recover some runtime cost,
+            we've added an option to enable offloading on a different stream to permit overlapping with
+            the computation. This option is currently only available on PyTorch 2.5 or later and will
+            be enabled by default if an acceptable torch version is found. Activation offloading can be
+            used in conjunction with activation checkpointing.
 
         - Precision. Full fp32 and bf16 training are supported. Precision is controlled using the ``dtype``
             flag. When ``dtype=bf16``, all activations, gradients and optimizer states are in bfloat16. In
@@ -99,6 +112,8 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         RuntimeError: If ``dtype`` is set to bf16 and the hardware does not support bf16.
         RuntimeError: If ``gradient_accumulation_steps > 1`` and ``optimizer_in_bwd`` is `True`.
         RuntimeError: If ``left_pad_sequence`` is set as the data collator.
+        RuntimeError: If ``enable_activation_offloading`` is True and device is not CUDA.
+        RuntimeError: If ``enable_activation_offloading`` is True and ``enable_activation_checkpointing`` is False.
     """
 
     def __init__(self, cfg: DictConfig) -> None:
@@ -116,27 +131,66 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self._log_every_n_steps = cfg.get("log_every_n_steps", 1)
         self._log_peak_memory_stats = cfg.get("log_peak_memory_stats", False)
 
+        if self._log_peak_memory_stats and self._device.type == "cpu":
+            log.info(
+                "log_peak_memory_stats was set to True, however, training uses cpu. Setting log_peak_memory_stats=False."
+            )
+            self._log_peak_memory_stats = False
+
         # Training cfg
         self._resume_from_checkpoint = cfg.resume_from_checkpoint
         self._gradient_accumulation_steps = cfg.gradient_accumulation_steps
         self._optimizer_in_bwd = cfg.optimizer_in_bwd
+        self._clip_grad_norm = cfg.get("clip_grad_norm", None)
 
-        # TODO: find a better place / way to perform validation of args that don't yet
-        # compose with each other.
-        if self._gradient_accumulation_steps > 1 and self._optimizer_in_bwd:
-            raise RuntimeError(
-                "Gradient accumulation is not supported with optimizer in bwd."
-                "Please set gradient_accumulation_steps=1, or optimizer_in_bwd=False."
+        # Optimizer in backward is not compatible with gradient accumulation or gradient clipping
+        if self._optimizer_in_bwd:
+            if self._clip_grad_norm is not None:
+                raise RuntimeError(
+                    "Gradient clipping is not supported with optimizer in bwd."
+                    "Please set clip_grad_norm=None, or optimizer_in_bwd=False."
+                )
+            if self._gradient_accumulation_steps > 1:
+                raise RuntimeError(
+                    "Gradient accumulation is not supported with optimizer in bwd."
+                    "Please set gradient_accumulation_steps=1, or optimizer_in_bwd=False."
+                )
+
+        # activation checkpointing/offloading
+        self._enable_activation_checkpointing = cfg.get(
+            "enable_activation_checkpointing", False
+        )
+        self._enable_activation_offloading = cfg.get(
+            "enable_activation_offloading", False
+        )
+        if self._enable_activation_offloading:
+            if self._device.type != "cuda":
+                raise RuntimeError(
+                    "enable_activation_offloading should only be True when training on CUDA"
+                )
+            if not self._enable_activation_checkpointing:
+                raise RuntimeError(
+                    "enable_activation_offloading should only be True when enable_activation_checkpointing is True"
+                )
+        elif (
+            self._enable_activation_checkpointing
+            and cfg.checkpointer.model_type != "LLAMA3_VISION"
+        ):
+            utils.log_rank_zero(
+                log,
+                "Hint: enable_activation_checkpointing is True, but enable_activation_offloading isn't. "
+                "Enabling activation offloading should reduce memory further.",
             )
 
         # These are public properties which are updated by the checkpoint loader
         # when ``resume_from_checkpoint`` is `True` or validated in tests
-        self.seed = training.set_seed(seed=cfg.seed)
+        self.seed = training.set_seed(
+            seed=cfg.seed, debug_mode=cfg.get("cudnn_deterministic_mode", None)
+        )
         self.epochs_run = 0
         self.total_epochs = cfg.epochs
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
         self.global_step = 0
-        self._clip_grad_norm = cfg.get("clip_grad_norm", None)
 
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
@@ -145,7 +199,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         """
         self._checkpointer = config.instantiate(
             cfg_checkpointer,
-            resume_from_checkpoint=self._resume_from_checkpoint,
+            should_load_recipe_state=self._resume_from_checkpoint,
         )
         checkpoint_dict = self._checkpointer.load_checkpoint()
 
@@ -209,9 +263,14 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         # should be called before ``_setup_optimizer`` since transforming the optimizer
         # state dict requires the model
         self._compile = cfg.compile
+        if cfg.device == "npu" and cfg.compile:
+            raise ValueError(
+                "NPU does not support model compilation. Please set `compile: False` in the config."
+            )
         self._model = self._setup_model(
             cfg_model=cfg.model,
-            enable_activation_checkpointing=cfg.enable_activation_checkpointing,
+            enable_activation_checkpointing=self._enable_activation_checkpointing,
+            enable_activation_offloading=self._enable_activation_offloading,
             compile_model=self._compile,
             model_state_dict=ckpt_dict[training.MODEL_KEY],
         )
@@ -243,11 +302,16 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         # sampler and dataloader depend on the tokenizer and loss_fn and should be
         # setup after both of these are initialized
         collate_name = cfg.get("collate_fn", "torchtune.data.padded_collate_sft")
-        self._sampler, self._dataloader = self._setup_data(
+        self._dataloader = self._setup_data(
             cfg_dataset=cfg.dataset,
             shuffle=cfg.shuffle,
             batch_size=cfg.batch_size,
             collate_fn=collate_name,
+            dataloader_state_dict=(
+                ckpt_dict[training.DATALOADER_KEY]
+                if self._resume_from_checkpoint
+                else None
+            ),
         )
 
         # Finally update the recipe state which can only be correctly set after all of the
@@ -354,6 +418,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self,
         cfg_model: DictConfig,
         enable_activation_checkpointing: bool,
+        enable_activation_offloading: bool,
         compile_model: bool,
         model_state_dict: Dict[str, Any],
     ) -> nn.Module:
@@ -376,9 +441,15 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         training.validate_expected_param_dtype(
             model.named_parameters(), dtype=self._dtype
         )
+
+        # Enable activation offloading
+        self.activations_handling_ctx = training.get_act_offloading_ctx_manager(
+            model, enable_activation_offloading
+        )
+
         log.info(f"Model is initialized with precision {self._dtype}.")
 
-        if self._device.type == "cuda":
+        if self._device.type != "cpu":
             memory_stats = training.get_memory_stats(device=self._device)
             training.log_memory_stats(memory_stats)
 
@@ -481,11 +552,12 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         shuffle: bool,
         batch_size: int,
         collate_fn: str,
-    ) -> Tuple[DistributedSampler, DataLoader]:
+        dataloader_state_dict: Optional[Dict[str, Any]] = None,
+    ) -> StatefulDataLoader:
         """
-        All data related setup happens here. Currently this recipe only supports the
-        DistributedSamplers with Map-style Datasets which fit into memory. Other samplers,
-        iterable datasets and streaming datasets are not supported.
+        All data related setup happens here. This recipe currently supports only
+        map-style datasets. If a state_dict is provided (meaning we are resuming a training run),
+        it is loaded into the dataloader.
         """
         if isinstance(cfg_dataset, ListConfig):
             datasets = [
@@ -493,7 +565,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                 for single_cfg_dataset in cfg_dataset
             ]
             ds = ConcatDataset(datasets=datasets)
-            packed = False
+            packed = getattr(ds, "packed", False)
         else:
             ds = config.instantiate(cfg_dataset, self._tokenizer)
             packed = cfg_dataset.get("packed", False)
@@ -503,31 +575,31 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             raise RuntimeError("left_pad_sequence collator is only for inference.")
         collate_fn = _get_component_from_path(collate_fn)
 
-        sampler = DistributedSampler(
+        sampler = StatefulDistributedSampler(
             ds,
             num_replicas=1,
             rank=0,
             shuffle=shuffle,
             seed=0,
         )
-        dataloader = DataLoader(
+        dataloader = StatefulDataLoader(
             dataset=ds,
             batch_size=batch_size,
             sampler=sampler,
+            collate_fn=(
+                partial(
+                    collate_fn,
+                    padding_idx=self._tokenizer.pad_id,
+                    ignore_idx=self._loss_fn.ignore_index,
+                )
+                if not packed
+                else padded_collate_packed
+            ),
             # dropping last avoids shape issues with compile + flex attention
             drop_last=True,
-            collate_fn=partial(
-                collate_fn,
-                padding_idx=self._tokenizer.pad_id,
-                ignore_idx=self._loss_fn.ignore_index,
-            )
-            if not packed
-            else padded_collate_packed,
         )
 
-        log.info("Dataset and Sampler are initialized.")
-
-        return sampler, dataloader
+        return dataloader
 
     def save_checkpoint(self, epoch: int) -> None:
         """
@@ -543,6 +615,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                     training.EPOCHS_KEY: self.epochs_run,
                     training.TOTAL_EPOCHS_KEY: self.total_epochs,
                     training.MAX_STEPS_KEY: self.max_steps_per_epoch,
+                    training.DATALOADER_KEY: self._dataloader.state_dict(),
                 }
             )
             if not self._optimizer_in_bwd:
@@ -559,7 +632,8 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         # Shape [b, s], needed for the loss not the model
         labels = batch.pop("labels")
 
-        logits = self._model(**batch)
+        with self.activations_handling_ctx:
+            logits = self._model(**batch)
 
         # Shift labels to compute loss
         # equivalent to doing labels[..., 1:] and logits[..., :-1, :]
@@ -599,43 +673,41 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self._profiler.start()
         # self.epochs_run should be non-zero when we're resuming from a checkpoint
         for curr_epoch in range(self.epochs_run, self.total_epochs):
-            # Update the sampler to ensure data is correctly shuffled across epochs
-            # in case shuffle is True
-            self._sampler.set_epoch(curr_epoch)
-
             pbar = tqdm(total=self._steps_per_epoch)
+            self._dataloader.sampler.set_epoch(curr_epoch)
             for idx, batch in enumerate(self._dataloader):
-                if (
-                    self.max_steps_per_epoch is not None
-                    and (idx // self._gradient_accumulation_steps)
-                    == self.max_steps_per_epoch
-                ):
-                    break
-
                 # Start tracking CUDA memory for active steps for just the first epoch
                 if (
                     curr_epoch == 0
                     and self.profiler_profile_memory
                     and idx == self.profiler_wait_steps + self.profiler_warmup_steps
+                    and self._device.type == "cuda"
                 ):
                     torch.cuda.memory._record_memory_history()
-
                 utils.batch_to_device(batch, self._device)
-                num_tokens += batch["tokens"].numel()
 
-                loss = self._loss_step(batch)
-                loss = loss / self._gradient_accumulation_steps
-                running_loss += loss
-                loss.backward()
+                # Calculate the number of unmasked tokens in the current batch
+                # and increment the total number of tokens seen in the step
+                current_num_tokens = (
+                    batch["labels"] != self._loss_fn.ignore_index
+                ).sum()
+                num_tokens += current_num_tokens
+
+                # Loss is normalized by default so we multiply by the number of tokens
+                # This way we can normalize by the total number of tokens if we're accumulating gradients
+                current_loss = self._loss_step(batch) * current_num_tokens
+                running_loss += current_loss
+                current_loss.backward()
 
                 # Step with optimizer
                 if (idx + 1) % self._gradient_accumulation_steps == 0:
-                    if self._clip_grad_norm is not None:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            self._model.parameters(),
-                            max_norm=float(self._clip_grad_norm),
-                        )
                     if not self._optimizer_in_bwd:
+                        training.scale_grads(self._model, 1 / num_tokens)
+                        if self._clip_grad_norm is not None:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                self._model.parameters(),
+                                max_norm=float(self._clip_grad_norm),
+                            )
                         self._optimizer.step()
                         self._optimizer.zero_grad(set_to_none=True)
 
@@ -644,7 +716,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                         self._lr_scheduler.step()
                     self.global_step += 1
 
-                    loss_to_log = running_loss.item()
+                    loss_to_log = running_loss.item() / num_tokens
                     pbar.update(1)
                     pbar.set_description(
                         f"{curr_epoch + 1}|{self.global_step}|Loss: {loss_to_log}"
@@ -657,14 +729,16 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                             "loss": loss_to_log,
                             # NOTE: for optim in backward, this assumes all optimizers have the same LR. This is currently
                             # true since we don't expose the ability to configure this yet.
-                            "lr": (
-                                self._optim_ckpt_wrapper.get_optim_key("lr")
-                                if self._optimizer_in_bwd
-                                else self._optimizer.param_groups[0]["lr"]
+                            "lr": get_lr(
+                                (
+                                    self._optimizer
+                                    if not self._optimizer_in_bwd
+                                    else self._optim_ckpt_wrapper
+                                ),
                             ),
                             "tokens_per_second_per_gpu": num_tokens / time_per_step,
                         }
-                        if self._device.type == "cuda" and self._log_peak_memory_stats:
+                        if self._device.type != "cpu" and self._log_peak_memory_stats:
                             log_dict.update(
                                 training.get_memory_stats(device=self._device)
                             )
@@ -688,6 +762,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                     == self.profiler_wait_steps
                     + self.profiler_warmup_steps
                     + self.profiler_active_steps
+                    and self._device.type == "cuda"
                 ):
                     torch.cuda.memory._record_memory_history(enabled=None)
 
@@ -695,6 +770,12 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                 # Note we are stepping each batch, which might not include optimizer step in the trace
                 # if the schedule cycle doesn't align with gradient accumulation.
                 self._profiler.step()
+
+                # Check if we should stop training for this epoch
+                if (
+                    (idx + 1) // self._gradient_accumulation_steps
+                ) == self.max_steps_per_epoch:
+                    break
 
             self.epochs_run += 1
             self.save_checkpoint(epoch=curr_epoch)

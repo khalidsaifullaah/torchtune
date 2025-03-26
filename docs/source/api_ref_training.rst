@@ -50,12 +50,10 @@ Utilities for enabling and working with distributed training.
     :toctree: generated/
     :nosignatures:
 
-    FSDPPolicyType
     init_distributed
     is_distributed
-    get_world_size_and_rank
-    get_full_finetune_fsdp_wrap_policy
-    lora_fsdp_wrap_policy
+    gather_cpu_state_dict
+    get_distributed_backend
 
 .. _ac_label:
 
@@ -86,6 +84,7 @@ Utilities to control lr during the training process.
     :nosignatures:
 
     get_cosine_schedule_with_warmup
+    get_lr
 
 .. _metric_logging_label:
 
@@ -103,6 +102,7 @@ Various logging utilities.
     metric_logging.TensorBoardLogger
     metric_logging.StdoutLogger
     metric_logging.DiskLogger
+    metric_logging.MLFlowLogger
 
 .. _perf_profiling_label:
 
@@ -128,4 +128,5 @@ Miscellaneous
     :nosignatures:
 
     get_unmasked_sequence_lengths
+    disable_dropout
     set_seed

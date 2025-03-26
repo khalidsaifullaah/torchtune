@@ -23,6 +23,8 @@ Modeling Components and Building Blocks
     TransformerCrossAttentionLayer
     TransformerDecoder
     VisionTransformer
+    LayerDropout
+    prepare_layer_dropout
 
 Losses
 ------
@@ -46,10 +48,11 @@ model specific tokenizers.
     :toctree: generated/
     :nosignatures:
 
-    tokenizers.SentencePieceBaseTokenizer
-    tokenizers.TikTokenBaseTokenizer
-    tokenizers.ModelTokenizer
-    tokenizers.BaseTokenizer
+    transforms.tokenizers.SentencePieceBaseTokenizer
+    transforms.tokenizers.TikTokenBaseTokenizer
+    transforms.tokenizers.HuggingFaceBaseTokenizer
+    transforms.tokenizers.ModelTokenizer
+    transforms.tokenizers.BaseTokenizer
 
 Tokenizer Utilities
 -------------------
@@ -59,8 +62,8 @@ These are helper methods that can be used by any tokenizer.
     :toctree: generated/
     :nosignatures:
 
-    tokenizers.tokenize_messages_no_special_tokens
-    tokenizers.parse_hf_tokenizer_json
+    transforms.tokenizers.tokenize_messages_no_special_tokens
+    transforms.tokenizers.parse_hf_tokenizer_json
 
 
 PEFT Components
@@ -71,11 +74,12 @@ PEFT Components
     :nosignatures:
 
     peft.LoRALinear
+    peft.DoRALinear
     peft.AdapterModule
     peft.get_adapter_params
     peft.set_trainable_params
+    peft.get_adapter_state_dict
     peft.validate_missing_and_unexpected_for_lora
-    peft.validate_state_dict_for_lora
     peft.disable_adapter
 
 
@@ -103,6 +107,9 @@ These are utilities that are common to and can be used by all modules.
    :nosignatures:
 
    common_utils.reparametrize_as_dtype_state_dict_post_hook
+   common_utils.local_kv_cache
+   common_utils.disable_kv_cache
+   common_utils.delete_kv_caches
 
 
 Vision Transforms

@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from functools import partial
 from typing import List, Optional
 
 from torch import nn
@@ -12,9 +11,9 @@ from torch import nn
 from torchtune.models.llama3._model_utils import scale_hidden_dim_for_mlp
 
 from torchtune.modules import (
-    MultiHeadAttention,
     FeedForward,
     FrozenNF4Linear,
+    MultiHeadAttention,
     RMSNorm,
     RotaryPositionalEmbeddings,
     TransformerDecoder,
@@ -40,6 +39,7 @@ the building blocks simple.
 
 # ------------------ Vanilla Llama3 ------------------
 
+
 def llama3(
     vocab_size: int,
     num_layers: int,
@@ -48,7 +48,7 @@ def llama3(
     embed_dim: int,
     max_seq_len: int,
     attn_dropout: float = 0.0,
-    rope_base: int = 500000.0,
+    rope_base: int = 500_000,
     intermediate_dim: Optional[int] = None,
     norm_eps: float = 1e-5,
 ) -> TransformerDecoder:
@@ -72,6 +72,7 @@ def llama3(
             by :func:`~torchtune.modules.KVCache`
         attn_dropout (float): dropout value passed onto scaled_dot_product_attention.
             Default: 0.0
+        rope_base (int): base for the rotary positional embeddings. Default: 500_000
         intermediate_dim (Optional[int]): intermediate dimension for MLP. If not specified,
             this is computed using :func:`~torchtune.modules.scale_hidden_dim_for_mlp`
         norm_eps (float): epsilon in RMS norms.
@@ -81,34 +82,42 @@ def llama3(
     """
     head_dim = embed_dim // num_heads
     num_kv_heads = num_kv_heads if num_kv_heads else num_heads
-    rope = RotaryPositionalEmbeddings(dim=head_dim, max_seq_len=max_seq_len, base=rope_base)
-    self_attn = MultiHeadAttention(
-        embed_dim=embed_dim,
-        num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-        q_proj=nn.Linear(embed_dim, num_heads * head_dim, bias=False),
-        k_proj=nn.Linear(embed_dim, num_kv_heads * head_dim, bias=False),
-        v_proj=nn.Linear(embed_dim, num_kv_heads * head_dim, bias=False),
-        output_proj=nn.Linear(embed_dim, embed_dim, bias=False),
-        pos_embeddings=rope,
-        max_seq_len=max_seq_len,
-        attn_dropout=attn_dropout,
+    hidden_dim = (
+        intermediate_dim if intermediate_dim else scale_hidden_dim_for_mlp(embed_dim)
     )
-    hidden_dim = intermediate_dim if intermediate_dim else scale_hidden_dim_for_mlp(embed_dim)
-    mlp = llama3_mlp(dim=embed_dim, hidden_dim=hidden_dim)
-    layer = TransformerSelfAttentionLayer(
-        attn=self_attn,
-        mlp=mlp,
-        sa_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
-        mlp_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+    rope = RotaryPositionalEmbeddings(
+        dim=head_dim, max_seq_len=max_seq_len, base=rope_base
     )
+
+    layers = nn.ModuleList()
+    for _ in range(num_layers):
+        self_attn = MultiHeadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
+            q_proj=nn.Linear(embed_dim, num_heads * head_dim, bias=False),
+            k_proj=nn.Linear(embed_dim, num_kv_heads * head_dim, bias=False),
+            v_proj=nn.Linear(embed_dim, num_kv_heads * head_dim, bias=False),
+            output_proj=nn.Linear(embed_dim, embed_dim, bias=False),
+            pos_embeddings=rope,
+            max_seq_len=max_seq_len,
+            attn_dropout=attn_dropout,
+        )
+        mlp = llama3_mlp(dim=embed_dim, hidden_dim=hidden_dim)
+        layer = TransformerSelfAttentionLayer(
+            attn=self_attn,
+            mlp=mlp,
+            sa_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+            mlp_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+        )
+        layers.append(layer)
+
     tok_embeddings = nn.Embedding(vocab_size, embed_dim)
     output_proj = nn.Linear(embed_dim, vocab_size, bias=False)
     return TransformerDecoder(
         tok_embeddings=tok_embeddings,
-        layers=layer,
-        num_layers=num_layers,
+        layers=layers,
         max_seq_len=max_seq_len,
         num_heads=num_heads,
         head_dim=head_dim,
@@ -116,15 +125,27 @@ def llama3(
         output=output_proj,
     )
 
+
 def llama3_mlp(dim: int, hidden_dim: int, quantize_base: bool = False) -> FeedForward:
     """
     Build the MLP layer associated with the Llama model.
     """
-    gate_proj = nn.Linear(dim, hidden_dim, bias=False) if not quantize_base else FrozenNF4Linear(dim, hidden_dim, bias=False)
-    down_proj = nn.Linear(hidden_dim, dim, bias=False) if not quantize_base else FrozenNF4Linear(hidden_dim, dim, bias=False)
-    up_proj = nn.Linear(dim, hidden_dim, bias=False) if not quantize_base else FrozenNF4Linear(dim, hidden_dim, bias=False)
+    gate_proj = (
+        nn.Linear(dim, hidden_dim, bias=False)
+        if not quantize_base
+        else FrozenNF4Linear(dim, hidden_dim, bias=False)
+    )
+    down_proj = (
+        nn.Linear(hidden_dim, dim, bias=False)
+        if not quantize_base
+        else FrozenNF4Linear(hidden_dim, dim, bias=False)
+    )
+    up_proj = (
+        nn.Linear(dim, hidden_dim, bias=False)
+        if not quantize_base
+        else FrozenNF4Linear(dim, hidden_dim, bias=False)
+    )
     return FeedForward(gate_proj=gate_proj, down_proj=down_proj, up_proj=up_proj)
-
 
 
 # ------------------ LoRA Llama3 ------------------
@@ -145,7 +166,7 @@ def lora_llama3(
     intermediate_dim: Optional[int] = None,
     attn_dropout: float = 0.0,
     norm_eps: float = 1e-5,
-    rope_base: float = 500000.0,
+    rope_base: int = 500_000,
     # LoRA args
     lora_rank: int,
     lora_alpha: float,
@@ -195,56 +216,68 @@ def lora_llama3(
         a subset of the attention projections in each layer.
 
     """
-
-    self_attn = lora_llama3_self_attention(
-        lora_modules=lora_attn_modules,
-        embed_dim=embed_dim,
-        num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
-        max_seq_len=max_seq_len,
-        attn_dropout=attn_dropout,
-        rope_base=rope_base,
-        lora_rank=lora_rank,
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        quantize_base=quantize_base,
-        use_dora=use_dora,
+    hidden_dim = (
+        intermediate_dim if intermediate_dim else scale_hidden_dim_for_mlp(embed_dim)
     )
 
-    hidden_dim = intermediate_dim if intermediate_dim else scale_hidden_dim_for_mlp(embed_dim)
-    if apply_lora_to_mlp:
-        mlp = lora_llama3_mlp(
-            dim=embed_dim,
-            hidden_dim=hidden_dim,
+    layers = nn.ModuleList()
+    for _ in range(num_layers):
+        self_attn = lora_llama3_self_attention(
+            lora_modules=lora_attn_modules,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            max_seq_len=max_seq_len,
+            attn_dropout=attn_dropout,
+            rope_base=rope_base,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
-            quantize_base=quantize_base,
             lora_dropout=lora_dropout,
+            quantize_base=quantize_base,
             use_dora=use_dora,
         )
-    else:
-        mlp = llama3_mlp(dim=embed_dim, hidden_dim=hidden_dim, quantize_base=quantize_base)
 
-    layer = TransformerSelfAttentionLayer(
-        attn=self_attn,
-        mlp=mlp,
-        sa_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
-        mlp_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
-    )
+        if apply_lora_to_mlp:
+            mlp = lora_llama3_mlp(
+                dim=embed_dim,
+                hidden_dim=hidden_dim,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                quantize_base=quantize_base,
+                lora_dropout=lora_dropout,
+                use_dora=use_dora,
+            )
+        else:
+            mlp = llama3_mlp(
+                dim=embed_dim, hidden_dim=hidden_dim, quantize_base=quantize_base
+            )
+
+        layer = TransformerSelfAttentionLayer(
+            attn=self_attn,
+            mlp=mlp,
+            sa_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+            mlp_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+        )
+        layers.append(layer)
 
     tok_embeddings = nn.Embedding(vocab_size, embed_dim)
 
     # TODO: quantize_base is not applied to final output_proj currently.
     adapter_cls = DoRALinear if use_dora else LoRALinear
     output_proj = (
-        adapter_cls(embed_dim, vocab_size, rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+        adapter_cls(
+            embed_dim,
+            vocab_size,
+            rank=lora_rank,
+            alpha=lora_alpha,
+            dropout=lora_dropout,
+        )
         if apply_lora_to_output
         else nn.Linear(embed_dim, vocab_size, bias=False)
     )
     model = TransformerDecoder(
         tok_embeddings=tok_embeddings,
-        layers=layer,
-        num_layers=num_layers,
+        layers=layers,
         max_seq_len=max_seq_len,
         num_heads=num_heads,
         head_dim=(embed_dim // num_heads),
@@ -269,7 +302,7 @@ def lora_llama3_self_attention(
     num_kv_heads: int,
     max_seq_len: int,
     attn_dropout: float = 0.0,
-    rope_base: float = 500000.0,
+    rope_base: int = 500_000,
     # LoRA args
     lora_rank: int,
     lora_alpha: float,
@@ -382,7 +415,9 @@ def lora_llama3_self_attention(
             else FrozenNF4Linear(embed_dim, embed_dim, bias=False)
         )
     )
-    rope = RotaryPositionalEmbeddings(dim=head_dim, max_seq_len=max_seq_len, base=rope_base)
+    rope = RotaryPositionalEmbeddings(
+        dim=head_dim, max_seq_len=max_seq_len, base=rope_base
+    )
     self_attn = MultiHeadAttention(
         embed_dim=embed_dim,
         num_heads=num_heads,

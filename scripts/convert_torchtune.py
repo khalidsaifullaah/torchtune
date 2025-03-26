@@ -8,6 +8,7 @@ import json
 # TODO: Move these constants to a shared file
 INPUT_FIELD = "input"
 OUTPUT_FIELD = "output"
+ANSWER_FIELD = "answer"
 
 # These constants should match with the system prompt in the config file and with the GRPO constants in Unsloth
 COT_OPENING = "\n<reasoning>"
@@ -111,7 +112,9 @@ Conversation:
                 explanation = cleaned_explanations[i][j]
                 label = cleaned_labels[i][j]
                 example[OUTPUT_FIELD] = f"{COT_OPENING} {discussion} {explanation} {COT_CLOSING} {LABEL_OPENING} {label} {LABEL_CLOSING}"
+                example[ANSWER_FIELD] = label
                 examples.append(example)
+                
 
     processed_dataset = datasets.Dataset.from_list(examples)
 
