@@ -29,7 +29,7 @@ save_adapter_weights_only: True
 dataset:
   _component_: torchtune.datasets.instruct_dataset
   source: json
-  data_files: data/multi_rule/multi_rule_train_3408_cot.jsonl
+  data_files: data/multi_rule/multi_rule_train_3408_combined.jsonl
   split: train
   new_system_prompt: "
 You are a guardian model evaluating the compliance of an agent with a list rules.

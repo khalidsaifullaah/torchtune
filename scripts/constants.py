@@ -1,8 +1,6 @@
-# These input and output fields are expected by unsloth
-# These constants should match the constants at the top of main.py
-# TODO: Move these constants to a shared file
-INPUT_FIELD = "question"
-OUTPUT_FIELD = "answer"
+# These input and output fields are expected by torchtune
+INPUT_FIELD = "input"
+OUTPUT_FIELD = "output"
 
 INPUT_FIELD = "question"
 OUTPUT_FIELD = "answer"
