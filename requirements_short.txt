@@ -3,3 +3,4 @@ torchvision
 torchao
 torchtune
 wandb
+spacy

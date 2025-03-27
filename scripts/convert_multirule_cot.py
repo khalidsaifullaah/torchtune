@@ -5,6 +5,27 @@ import random
 import datasets
 from tqdm import tqdm
 import re
+import spacy
+import sys
+from pathlib import Path
+
+from constants import (
+    INPUT_FIELD,
+    OUTPUT_FIELD,
+    NUM_RULES_METADATA,
+    COT_OPENING,
+    COT_CLOSING,
+    MULTIRULE_LABEL_OPENING,
+    MULTIRULE_LABEL_CLOSING,
+    RULES_OPENING,
+    RULES_CLOSING,
+    RULE_NUMBER_OPENING,
+    RULE_NUMBER_CLOSING,
+    LINE_OPENING,
+    LINE_CLOSING,
+    EXPLANATION_OPENING,
+    EXPLANATION_CLOSING,
+)
 
 """
 Convert a Compliance dataset in the format:
@@ -24,31 +45,12 @@ to an eval-friendly dataset in the format:
 }
 """
 
-# These constants should match the constants at the top of main.py
-# TODO: Move these constants to a shared file
-INPUT_FIELD = "input"
-OUTPUT_FIELD = "output"
-NUM_RULES_METADATA = "num_rules"
-
-COT_OPENING = "<reasoning>"
-COT_CLOSING = "</reasoning>"
-LABEL_OPENING = "<all_compliant>"
-LABEL_CLOSING = "</all_compliant>"
-RULES_OPENING = "<rules_violated>"
-RULES_CLOSING = "</rules_violated>"
-RULE_NUMBER_OPENING = "<rule_number>"
-RULE_NUMBER_CLOSING = "</rule_number>"
-LINE_OPENING = "<line_in_transcript>"
-LINE_CLOSING = "</line_in_transcript>"
-EXPLANATION_OPENING = "<explanation>"
-EXPLANATION_CLOSING = "</explanation>"
-
 class ComplianceProjectError(ValueError):
     pass
 
 def extract_xml_answer(text: str) -> str:
-    answer = text.split(LABEL_OPENING.strip())[-1]
-    answer = answer.split(LABEL_CLOSING.strip())[0]
+    answer = text.split(MULTIRULE_LABEL_OPENING.strip())[-1]
+    answer = answer.split(MULTIRULE_LABEL_CLOSING.strip())[0]
     return answer.strip()
 
 def print_stats(dataset_path, local=True, obj=False):
@@ -121,7 +123,29 @@ def get_dialogue_turns(dialogue, expected_turns, example_index=-1):
             """)
     return dialogue_turns
 
-def preprocess_dataset(dataset_path, subset=None, split=None, size=None, local=False, data_dir="data"):
+
+def separate_sentences(paragraph):
+    # Load the English NLP model
+    nlp = spacy.load("en_core_web_sm")
+    # Process the paragraph
+    doc = nlp(paragraph)
+    # Extract sentences from the processed document
+    return [sent.text.strip() for sent in doc.sents]
+
+def get_cot(discussions, explanations):
+    # There is a discussion for every rule, and within that a discussion for every turn. Get only the discussion from the last turn for the COT.
+    last_turn_discussions = [turn_discussions[-1] for turn_discussions in discussions]
+    last_turn_explanations = [explanations[-1] for explanations in explanations]
+    cot_by_rule = []
+    for discussion, explanation in zip(last_turn_discussions, last_turn_explanations):
+        sentences = separate_sentences(discussion)
+        first_two_sentences = sentences[:2]
+        short_discussion = ' '.join(first_two_sentences)
+        cot_by_rule.append(f"{short_discussion} {explanation}")
+    enumerated_cot = '\n'.join(f"Rule {i+1}. {cot}" for i, cot in enumerate(cot_by_rule))
+    return enumerated_cot
+
+def preprocess_dataset(dataset_path, subset=None, split=None, size=None, local=False, data_dir="data", add_cot=False):
     if local:
         dataset = datasets.load_dataset("json", data_files={"placeholder": dataset_path})["placeholder"]
     else:
@@ -187,15 +211,10 @@ Transcript:
                     violation_explanations.append(cleaned_explanations[i][j])
                     break # We capture the first violation of a given rule and then move to the next rule
         
-        # Get COT
-        # There is a discussion for every rule, and within that a discussion for every turn. Get only the discussion from the last turn for the COT.
-        last_turn_discussions = [turn_discussions[-1] for turn_discussions in cleaned_discussions]
-        enumerated_discussions = '\n'.join(f"Rule {i+1}. {discussion}" for i, discussion in enumerate(last_turn_discussions))
-        
         # Format in xml tags
-        cot_block = f"{COT_OPENING}\n{enumerated_discussions}\n{COT_CLOSING}"
-        label_block = f"{LABEL_OPENING}\n{allpass_label}\n{LABEL_CLOSING}"
-        rules_block = f"{RULES_OPENING}\n{','.join(map(str, violated_rules))}\n{RULES_CLOSING}" if violated_rules else ""
+        cot_block = f"{COT_OPENING}\n{get_cot(cleaned_discussions, cleaned_explanations)}\n{COT_CLOSING}\n" if add_cot else ""
+        label_block = f"{MULTIRULE_LABEL_OPENING}\n{allpass_label}\n{MULTIRULE_LABEL_CLOSING}\n"
+        rules_block = f"{RULES_OPENING}\n{','.join(map(str, violated_rules))}\n{RULES_CLOSING}\n" if violated_rules else ""
         explanation_blocks = ""
         for i in range(len(violated_rules)):
             rule_number = violated_rules[i]
@@ -212,7 +231,7 @@ Transcript:
 {explanation}
 {EXPLANATION_CLOSING}
 """
-        example[OUTPUT_FIELD] = f"{cot_block}\n{label_block}\n{rules_block}\n{explanation_blocks}"
+        example[OUTPUT_FIELD] = f"{cot_block}{label_block}{rules_block}{explanation_blocks}"
         example[NUM_RULES_METADATA] = num_rules
         examples.append(example)
 
@@ -265,6 +284,7 @@ def parse_args():
     parser.add_argument("--subsets", type=list, default=["multi_rule"])
     parser.add_argument("--splits", type=list, default=["train"])
     parser.add_argument("--combine", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument("--cot", default=True, action=argparse.BooleanOptionalAction)
     return parser.parse_args()
 
 

@@ -38,10 +38,15 @@ Evaluate the output of the agent in the context of the transcript and determine 
 If the agent is compliant with all of the rules, output PASS. If the agent violates any of the rules, output FAIL.
 If the output is FAIL, list the numbers of any rules that were violated. Then, begin providing information about each rule that was violated.
 For each rule, provide the rule number, the text of the line in the transcript where the violation occured, and a brief explanation of how the agent violated the rule.
+If presented with a <reasoning> tag, provide a few sentences of reasoning about the compliance for each rule before declaring PASS or FAIL for the whole list.
 
 Respond in the following format:
+[Optional reasoning]
+<reasoning>
+[Few sentences of reasoning]
+</reasoning>
 <all_compliant>
-[PASS/FAIL[]
+[PASS/FAIL]
 </all_compliant>
 [If FAIL:]
 <rules_violated>
@@ -58,7 +63,7 @@ Respond in the following format:
 [explanation]
 </explanation>
 
-For example, here are two correctly formatted responses.
+For example, here are three correctly formatted responses.
 Example 1:
 <all_compliant>
 FAIL
@@ -90,12 +95,23 @@ Example 2:
 PASS
 </all_compliant>
 
+Example 3:
+<reasoning>
+Rule 1. The agent correctly used the company branding as specified. Therefore rule was not violated.
+Rule 2. The rule did not apply to this conversation because the rule was for when medical questions were asked and the topic was about the weather. The rule was not violated.
+Rule 3. The agent did not use emojis. Since that was the only restriction in the rule, the transcript was compliant with the rule.
+</reasoning>
+<all_compliant>
+PASS
+</all_compliant>
+
 Now please evaluate the following transcript in the context of the rules provided.
 "
+
 valid_data_files: data/multi_rule/multi_rule_test_98.jsonl
 seed: null
 shuffle: True
-batch_size: 2
+batch_size: 1
 
 # Optimizer and Scheduler
 optimizer:
@@ -113,7 +129,7 @@ loss:
 # Training
 epochs: 5
 max_steps_per_epoch: null
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 32
 compile: True # set it to True for better memory and performance
 
 # Logging

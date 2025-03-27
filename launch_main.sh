@@ -8,3 +8,9 @@ tune run lora_finetune_single_device --config recipes/configs/guardian_models/qw
 tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_3B_lora_multirule.yaml
 tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_7B_lora_multirule.yaml
 tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_14B_lora_multirule.yaml
+
+# tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_05B_lora_7500.yaml
+# tune run lora_finetune_single_device --config  recipes/configs/guardian_models/qwen_2_5_1B_lora_7500.yaml
+# tune run lora_finetune_single_device --config  recipes/configs/guardian_models/qwen_2_5_3B_lora_7500.yaml
+# tune run lora_finetune_single_device --config  recipes/configs/guardian_models/qwen_2_5_7B_lora_7500.yaml
+# tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_14B_lora_7500.yaml
