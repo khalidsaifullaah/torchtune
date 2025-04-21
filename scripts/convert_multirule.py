@@ -234,7 +234,7 @@ Transcript:
         # Format in xml tags
         cot_block = f"{COT_OPENING}\n{cot}\n{COT_CLOSING}\n" if add_cot else ""
         label_block = f"{MULTIRULE_LABEL_OPENING}\n{allpass_label}\n{MULTIRULE_LABEL_CLOSING}\n"
-        rules_block = f"{RULES_OPENING}\n{','.join(map(str, violated_rules))}\n{RULES_CLOSING}\n" if violated_rules else ""
+        rules_block = f"{RULES_OPENING}\n{','.join(map(str, violated_rules))}\n{RULES_CLOSING}\n" if violated_rules else f"{RULES_OPENING}\n{RULES_CLOSING}\n"
         explanation_blocks = ""
         for i in range(len(violated_rules)):
             rule_number = violated_rules[i]
@@ -251,7 +251,7 @@ Transcript:
 {explanation}
 {EXPLANATION_CLOSING}
 """
-        example[OUTPUT_FIELD] = f"{cot_block}{label_block}{rules_block}{explanation_blocks}"
+        example[OUTPUT_FIELD] = f"{cot_block}{label_block}{rules_block}"
         example[NUM_RULES_METADATA] = num_rules
         examples.append(example)
 
@@ -301,7 +301,7 @@ def parse_args():
     # parser.add_argument("--subsets", type=list, default=["easy", "hard"])
     # parser.add_argument("--splits", type=list, default=["train", "validation", "test"])
     parser.add_argument("--subsets", type=list, default=["multi_rule"])
-    parser.add_argument("--splits", type=list, default=["train"])
+    parser.add_argument("--splits", type=list, default=["train", "test"])
     parser.add_argument("--combine", default=False, action=argparse.BooleanOptionalAction)
     parser.add_argument("--cot", default=False, action=argparse.BooleanOptionalAction)
     return parser.parse_args()
