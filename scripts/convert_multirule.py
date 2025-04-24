@@ -205,11 +205,12 @@ def preprocess_dataset(dataset_path, subset=None, split=None, size=None, local=F
 
         enumerated_rules = '\n'.join(f"{i+1}. {rule}" for i, rule in enumerate(cleaned_rules))
         example[INPUT_FIELD] = f'''
-Rules agent must follow:
+<rules>
 {enumerated_rules}
-
-Transcript:
+</rules>
+<transcript>
 {dialogue}
+</transcript>
 '''     
         ##################
         # Output        
@@ -234,7 +235,7 @@ Transcript:
         # Format in xml tags
         cot_block = f"{COT_OPENING}\n{cot}\n{COT_CLOSING}\n" if add_cot else ""
         label_block = f"{MULTIRULE_LABEL_OPENING}\n{allpass_label}\n{MULTIRULE_LABEL_CLOSING}\n"
-        rules_block = f"{RULES_OPENING}\n{','.join(map(str, violated_rules))}\n{RULES_CLOSING}\n" if violated_rules else f"{RULES_OPENING}\n{RULES_CLOSING}\n"
+        rules_block = f"{RULES_OPENING}\n{','.join(map(str, violated_rules))}\n{RULES_CLOSING}\n" if violated_rules else f"{RULES_OPENING}\nNone\n{RULES_CLOSING}\n"
         explanation_blocks = ""
         for i in range(len(violated_rules)):
             rule_number = violated_rules[i]
@@ -251,7 +252,7 @@ Transcript:
 {explanation}
 {EXPLANATION_CLOSING}
 """
-        example[OUTPUT_FIELD] = f"{cot_block}{label_block}{rules_block}"
+        example[OUTPUT_FIELD] = f"{cot_block}{rules_block}{label_block}"
         example[NUM_RULES_METADATA] = num_rules
         examples.append(example)
 
@@ -296,7 +297,7 @@ def main(args):
  
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", default="data/multi_rule", type=str)
+    parser.add_argument("--data_dir", default="data/multirule", type=str)
     parser.add_argument("--train_size", default=10000, type=int)
     # parser.add_argument("--subsets", type=list, default=["easy", "hard"])
     # parser.add_argument("--splits", type=list, default=["train", "validation", "test"])
