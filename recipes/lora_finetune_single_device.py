@@ -303,6 +303,9 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
 
         log.info("Loss is initialized.")
 
+        # Monte Add:
+        self._run_validation = cfg.get("run_validation", True)
+
         # Dataloader depends on the tokenizer and loss_fn and should be
         # setup after all of these are setup
         collate_name = cfg.get("collate_fn", "torchtune.data.padded_collate_sft")
@@ -544,9 +547,6 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
             ds = config.instantiate(cfg_dataset, self._tokenizer)
             packed = cfg_dataset.get("packed", False)
 
-        cfg_dataset['data_files'] = valid_data_files
-        valid_ds = config.instantiate(cfg_dataset, self._tokenizer)
-
         # Instantiate collate_fn
         if "left_pad_sequence" in collate_fn:
             raise RuntimeError("left_pad_sequence collator is only for inference.")
@@ -575,22 +575,28 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
                 else padded_collate_packed
             ),
         )
-        valid_dataloader = DataLoader(
-            dataset=valid_ds,
-            sampler=None,
-            batch_size=batch_size,
-            # dropping last avoids shape issues with compile + flex attention
-            drop_last=True,
-            collate_fn=(
-                partial(
-                    collate_fn,
-                    padding_idx=self._tokenizer.pad_id,
-                    ignore_idx=self._loss_fn.ignore_index,
-                )
-                if not packed
-                else padded_collate_packed
-            ),
-        )
+
+        if self._run_validation:
+            cfg_dataset['data_files'] = valid_data_files
+            valid_ds = config.instantiate(cfg_dataset, self._tokenizer)
+            valid_dataloader = DataLoader(
+                dataset=valid_ds,
+                sampler=None,
+                batch_size=batch_size,
+                # dropping last avoids shape issues with compile + flex attention
+                drop_last=True,
+                collate_fn=(
+                    partial(
+                        collate_fn,
+                        padding_idx=self._tokenizer.pad_id,
+                        ignore_idx=self._loss_fn.ignore_index,
+                    )
+                    if not packed
+                    else padded_collate_packed
+                ),
+            )
+        else:
+            valid_dataloader = None
 
         log.info("Dataset and Sampler are initialized.")
 
@@ -825,7 +831,8 @@ class LoRAFinetuneRecipeSingleDevice(FTRecipeInterface):
                 # in case shuffle is True
                 self._sampler.set_epoch(curr_epoch)
 
-                do_validation(curr_epoch)
+                if self._run_validation:
+                    do_validation(curr_epoch)
 
                 pbar = tqdm(total=self._steps_per_epoch)
                 self._dataloader.sampler.set_epoch(curr_epoch)
@@ -953,7 +960,10 @@ def recipe_main(cfg: DictConfig) -> None:
     config.log_config(recipe_name="LoRAFinetuneRecipeSingleDevice", cfg=cfg)
     recipe = LoRAFinetuneRecipeSingleDevice(cfg=cfg)
     recipe.setup(cfg=cfg)
+    start_time = time.time()
     recipe.train()
+    end_time = time.time()
+    log.debug(f"Training time: {end_time - start_time:.2f} seconds")
     recipe.cleanup()
 
 
