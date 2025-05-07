@@ -16,6 +16,10 @@
    ```bash
    tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_3B_lora_reproducible.yaml
    ```
+   or
+   ```
+   tune run full_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_3B_full_reproducible.yaml
+   ```
 
 This run with 3 epochs of 1750 examples should take 30 minutes on an RTX A5000.
 
