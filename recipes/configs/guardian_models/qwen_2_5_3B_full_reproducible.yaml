@@ -1,0 +1,136 @@
+# Model Arguments
+model:
+  _component_: torchtune.models.qwen2_5.qwen2_5_3b
+# model:
+#   _component_: torchtune.models.qwen2_5.lora_qwen2_5_3b
+  # lora_attn_modules: ['q_proj', 'k_proj', 'v_proj', 'output_proj']
+  # apply_lora_to_mlp: False
+  # lora_rank: 16
+  # lora_alpha: 32
+  # lora_dropout: 0.0
+
+# Tokenizer
+tokenizer:
+  _component_: torchtune.models.qwen2_5.qwen2_5_tokenizer
+  path: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/huggingface_base/vocab.json
+  merges_file: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/huggingface_base/merges.txt
+  max_seq_len: null
+
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/huggingface_base/
+  checkpoint_files: [
+    model-00001-of-00002.safetensors,
+    model-00002-of-00002.safetensors,
+  ]
+  recipe_checkpoint: null
+  output_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/lora_reproducible/
+  model_type: QWEN2
+resume_from_checkpoint: False
+# save_adapter_weights_only: True
+
+# Dataset and Sampler
+dataset:
+  _component_: torchtune.datasets.instruct_dataset
+  source: tomg-group-umd/compliance
+  split: train[:10%]
+  column_map:
+    input: question
+    output: answer
+  new_system_prompt: "
+You are a guardian model evaluating the compliance of an agent with a list of rules.
+The rules will be provided in a numbered format, starting with a <rules> tag and ending with a </rules> tag.
+You will be given the transcript that contains output from the agent, starting with a <transcript> tag and ending with a </transcript> tag.
+
+Your job is to evaluate the agent's output in the transcript and determine if any of the rules have been violated. 
+
+If a <reasoning> tag is present, provide a few sentences of reasoning about the compliance for each rule before determining whether it has been violated.
+If no rules were violated by the agent, output PASS as the final answer. Otherwise, if any rules were violated, output FAIL.
+Then, if any rules are violated, list them as a comma separated list of rule numbers. If no rules are violated, mark this field with \"None\".
+
+Respond in the following format:
+[Optional reasoning]
+<reasoning>
+Few sentences of reasoning
+</reasoning>
+<answer>
+PASS/FAIL
+</answer>
+[If FAIL:]
+<rules_violated>
+Comma separated list, or None
+</rules_violated>
+"
+run_validation: False
+valid_data_files: null
+seed: null
+shuffle: True
+batch_size: 2
+
+# Optimizer and Scheduler
+optimizer:
+  _component_: bitsandbytes.optim.PagedAdamW
+  lr: 5e-6
+optimizer_in_bwd: True  # True saves memory. Requires gradient_accumulation_steps=1
+# # Lora version:
+# optimizer:
+#   _component_: torch.optim.AdamW
+#   fused: True
+#   weight_decay: 0.01
+#   lr: 1e-4
+# lr_scheduler:
+#   _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+#   num_warmup_steps: 100
+
+loss:
+  _component_: torchtune.modules.loss.CEWithChunkedOutputLoss
+
+# Training
+epochs: 3
+max_steps_per_epoch: null
+gradient_accumulation_steps: 1
+compile: True # set it to True for better memory and performance
+
+# Logging
+output_dir: /
+metric_logger:
+  _component_: torchtune.training.metric_logging.WandBLogger
+  entity: guardian-models
+  project: sft-compliance
+  name: qwen2.5 3b reproducible
+log_every_n_steps: 1
+log_peak_memory_stats: False
+
+# Environment
+device: cuda
+dtype: bf16
+
+# Activations Memory
+enable_activation_checkpointing: True
+enable_activation_offloading: False
+
+# Profiler (disabled)
+profiler:
+  _component_: torchtune.training.setup_torch_profiler
+  enabled: False
+
+  #Output directory of trace artifacts
+  output_dir: ${output_dir}/profiling_outputs
+
+  #`torch.profiler.ProfilerActivity` types to trace
+  cpu: True
+  cuda: True
+
+  #trace options passed to `torch.profiler.profile`
+  profile_memory: False
+  with_stack: False
+  record_shapes: True
+  with_flops: False
+
+  # `torch.profiler.schedule` options:
+  # wait_steps -> wait, warmup_steps -> warmup, active_steps -> active, num_cycles -> repeat
+  wait_steps: 5
+  warmup_steps: 3
+  # warmup_steps: 5
+  active_steps: 2
+  num_cycles: 1

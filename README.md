@@ -2,7 +2,7 @@
 
 1. Setup environment:
    ```
-   pip install -r requirements.txt
+   pip install -r requirements_short.txt
    ```
 
 2. Download selected model:

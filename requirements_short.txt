@@ -1,6 +1,7 @@
 torch 
 torchvision 
 torchao
-torchtune
+-e . # torchtune
 wandb
 spacy
+bitsandbytes
