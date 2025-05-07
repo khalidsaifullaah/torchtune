@@ -33,7 +33,7 @@ resume_from_checkpoint: False
 dataset:
   _component_: torchtune.datasets.instruct_dataset
   source: tomg-group-umd/compliance
-  split: train[:10%]
+  split: train_cot[:10%]
   column_map:
     input: question
     output: answer
