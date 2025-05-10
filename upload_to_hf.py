@@ -51,7 +51,7 @@ def main():
 
     # Get the current user's username
     # username = whoami()["name"]
-    repo_id = f"tomg-group-umd/{args.repo_name}"
+    repo_id = args.repo_name
 
     # Create the repository if it doesn't exist
     try:
