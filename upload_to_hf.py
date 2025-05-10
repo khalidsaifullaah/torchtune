@@ -13,7 +13,7 @@ def main():
     parser.add_argument(
         "--repo-name",
         type=str,
-        default="tomg-group-umd/test,
+        default="tomg-group-umd/test",
         help="Name of the Hugging Face Hub repository."
     )
     parser.add_argument(
