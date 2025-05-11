@@ -32,7 +32,8 @@ dataset:
   _component_: torchtune.datasets.instruct_dataset
   source: tomg-group-umd/compliance
   name: compliance
-  split: train_cot[:10%]
+  # split: train_cot[:10%]
+  split: train_cot
   column_map:
     input: question
     output: answer
