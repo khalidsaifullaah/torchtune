@@ -1,0 +1,125 @@
+# Model Arguments
+model:
+  _component_: torchtune.models.mistral.lora_mistral_7b
+  lora_attn_modules: ['q_proj', 'k_proj', 'v_proj', 'output_proj']
+  apply_lora_to_mlp: False
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+
+# Tokenizer
+tokenizer:
+  # _component_: torchtune.models.mistral.mistral_tokenizer
+  path: /fs/cml-projects/guardian_models/models/WildGuard/huggingface_base/tokenizer.model
+  max_seq_len: null
+
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: /fs/cml-projects/guardian_models/models/WildGuard/huggingface_base/
+  checkpoint_files: [
+    pytorch_model-00001-of-00002.bin,
+    pytorch_model-00002-of-00002.bin
+  ]
+  recipe_checkpoint: null
+  output_dir: /fs/cml-projects/guardian_models/models/WildGuard/lora_multirule_v2/
+  model_type: MISTRAL
+resume_from_checkpoint: False
+save_adapter_weights_only: True
+
+# Dataset and Sampler
+dataset:
+  _component_: torchtune.datasets.instruct_dataset
+  source: json
+  data_files: data/multirule/multi_rule_train_1704_cot.jsonl
+  split: train
+  new_system_prompt: "
+You are a guardian model evaluating the compliance of an agent with a list rules.
+The rules will be provided in a numbered format, and you will be given the transcript that contains output from the agent.
+Evaluate the output of the agent in the context of the transcript and determine if any of the rules have been violated.
+
+Output your response within xml tags for both the answer and reasoning supporting that answer. 
+First provide the reasoning of how the conversation relates to the each of the rules one by one. Think about how the agent either violated or did not violate each rule. 
+Not every rule will be applicable to the conversation, and if the rule is not applicable, it cannot possibly be violated because it does not apply.
+Cite specific examples of how ear rule was violated or not violated. If it was not violated, either cite evidence of the agent following the rule, or cite wording in the
+rule and conversation that show by definition of terms that the rule is not applicable to the specific conversation.
+Provide several sentences of reasoning about the compliance for each rule before declaring PASS or FAIL for the whole list.
+
+If the agent is compliant with all of the rules, output PASS. If the agent violates any of the rules, output FAIL.
+If the output is FAIL, list the numbers of any rules that were violated. Then, begin providing information about each rule that was violated.
+For each rule, provide the rule number, the text of the line in the transcript where the violation occured, and a brief explanation of how the agent violated the rule.
+If presented with a <reasoning> tag, 
+
+Respond in the following format:
+<reasoning>
+[your reasoning]
+</reasoning>
+<answer>
+PASS/FAIL
+</answer>
+"
+valid_data_files: data/multirule/multi_rule_test_98_cot.jsonl
+seed: null
+shuffle: True
+batch_size: 1
+
+# Optimizer and Scheduler
+optimizer:
+  _component_: torch.optim.AdamW
+  fused: True
+  weight_decay: 0.01
+  lr: 1e-4
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 100
+
+loss:
+  _component_: torchtune.modules.loss.CEWithChunkedOutputLoss
+
+# Training
+epochs: 5
+max_steps_per_epoch: null
+gradient_accumulation_steps: 16
+compile: True # set it to True for better memory and performance
+
+# Logging
+output_dir: /
+metric_logger:
+  _component_: torchtune.training.metric_logging.WandBLogger
+  entity: guardian-models
+  project: sft-compliance
+  name: WildGuard 7b 7500 examples
+log_every_n_steps: 1
+log_peak_memory_stats: False
+
+# Environment
+device: cuda
+dtype: bf16
+
+# Activations Memory
+enable_activation_checkpointing: True
+enable_activation_offloading: False
+
+# Profiler (disabled)
+profiler:
+  _component_: torchtune.training.setup_torch_profiler
+  enabled: False
+
+  #Output directory of trace artifacts
+  output_dir: ${output_dir}/profiling_outputs
+
+  #`torch.profiler.ProfilerActivity` types to trace
+  cpu: True
+  cuda: True
+
+  #trace options passed to `torch.profiler.profile`
+  profile_memory: False
+  with_stack: False
+  record_shapes: True
+  with_flops: False
+
+  # `torch.profiler.schedule` options:
+  # wait_steps -> wait, warmup_steps -> warmup, active_steps -> active, num_cycles -> repeat
+  wait_steps: 5
+  warmup_steps: 5
+  active_steps: 2
+  num_cycles: 1

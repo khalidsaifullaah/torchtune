@@ -42,17 +42,17 @@ class RLDataset(Dataset):
         tokenizer: ModelTokenizer,
         filter_fn: Optional[Callable] = None,
         filter_kwargs: Optional[dict[str, Any]] = None,
+        system_prompt: str = BASE_PROMPT,
         **load_dataset_kwargs: Dict[str, Any],
     ) -> None:
         self._problem_transform = problem_transform
         self._tokenizer = tokenizer
-
         self._data = load_dataset(source, **load_dataset_kwargs)
         if filter_fn is not None:
             if filter_kwargs is None:
                 filter_kwargs = {}
             self._data = self._data.filter(filter_fn, **filter_kwargs)
-
+        self._system_prompt = system_prompt
     def __len__(self):
         return len(self._data)
 
@@ -65,8 +65,7 @@ class RLDataset(Dataset):
             sample
         )  # keys "question" and "answer"
 
-        question = BASE_PROMPT % transformed_sample["question"]
-
+        question = self._system_prompt % transformed_sample["question"]
         q_tokens = self._tokenizer.encode(question, add_eos=False)
         mask = [1 for _ in q_tokens]
         answer = transformed_sample["answer"]
@@ -115,7 +114,6 @@ def padded_collate_rl(
         batch_first=True,
         padding_value=padding_idx,
     )
-
     answers = [x["answer"] for x in batch]
     text = [x["question"] for x in batch]
 

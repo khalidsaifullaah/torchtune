@@ -9,6 +9,10 @@ from typing import Callable, Dict, Optional
 from torch import nn
 from torch.distributed.tensor.parallel.style import ParallelStyle
 
+# if _USE_NEW_TENSOR_CORE_TILED_LAYOUT_API:
+#     # https://github.com/pytorch/torchtune/issues/1908
+#     try:
+#         # torchao 0.7+
 from torchao.dtypes import TensorCoreTiledLayout
 from torchao.float8 import (
     convert_to_float8_training as _convert_to_float8_training_torchao,

@@ -1,4 +1,28 @@
+## System Prompt Compliance Setup
 
+1. Setup environment:
+   ```
+   pip install -r requirements.txt
+   pip install -e .
+   ```
+
+2. Download selected model:
+   ```bash
+   tune download Qwen/Qwen2.5-3B-Instruct --output-dir /fs/cml-projects/guardian_models/models/Qwen2-3B-Instruct/huggingface_base --ignore-patterns='original/consolidated.00.pth'
+   ```
+
+3. Confirm training config has this path listed correctly in https://github.com/khalidsaifullaah/torchtune/blob/main/recipes/configs/guardian_models/qwen_2_5_3B_lora_reproducible.yaml
+
+4. Run the training:
+   ```bash
+   tune run lora_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_3B_lora_reproducible.yaml
+   ```
+   or
+   ```
+   tune run full_finetune_single_device --config recipes/configs/guardian_models/qwen_2_5_3B_full_reproducible.yaml
+   ```
+
+This run with 3 epochs of 1750 examples should take 30 minutes on an RTX A5000.
 
 
 # torchtune

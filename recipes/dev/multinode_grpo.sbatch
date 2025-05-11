@@ -41,7 +41,7 @@ export LOGLEVEL=INFO
 # ...or venv
 # source torchtune/bin/activate
 
-source ../../.venv/bin/activate
+conda activate unsloth
 
 # Adjust sbatch --ntasks and sbatch --nodes above and --nnodes below to your specific node count
 srun --export=ALL,OMP_NUM_THREADS=8 tune run --nnodes 2 --nproc_per_node 8 --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$head_node_ip:29500" \
