@@ -105,13 +105,18 @@ metric_logger:
 log_every_n_steps: 1
 log_peak_memory_stats: False
 
-# Environment
-device: cuda
-dtype: bf16
+compile: False  # torch.compile the model + loss, True increases speed + decreases memory
+optimizer_in_bwd: False  # True saves memory. Requires gradient_accumulation_steps=1
 
-# Activations Memory
-enable_activation_checkpointing: True
-enable_activation_offloading: False
+# Training env
+device: cuda
+
+# Memory management
+enable_activation_checkpointing: True  # True reduces memory
+enable_activation_offloading: False  # True reduces memory
+
+# Reduced precision
+dtype: bf16
 
 # Profiler (disabled)
 profiler:
