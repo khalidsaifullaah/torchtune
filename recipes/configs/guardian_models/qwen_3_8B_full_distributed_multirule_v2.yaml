@@ -34,12 +34,14 @@ checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
   checkpoint_dir: /tmp/Qwen3-8B/
   checkpoint_files: [
-    model-00001-of-00003.safetensors,
-    model-00002-of-00003.safetensors,
-    model-00003-of-00003.safetensors,
+    model-00001-of-00005.safetensors,
+    model-00002-of-00005.safetensors,
+    model-00003-of-00005.safetensors,
+    model-00004-of-00005.safetensors,
+    model-00005-of-00005.safetensors,
   ]
   recipe_checkpoint: null
-  output_dir: /tmp/Qwen3-8B/SFT/
+  output_dir: /tmp/Qwen3-8B/
   model_type: QWEN2
 resume_from_checkpoint: False
 
