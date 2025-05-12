@@ -39,8 +39,8 @@ checkpointer:
     model-00003-of-00003.safetensors,
   ]
   recipe_checkpoint: null
-  output_dir: /tmp/Qwen3-4B/SFT/
-  model_type: QWEN3
+  output_dir: /tmp/Qwen3-8B/SFT/
+  model_type: QWEN2
 resume_from_checkpoint: False
 
 # Dataset
