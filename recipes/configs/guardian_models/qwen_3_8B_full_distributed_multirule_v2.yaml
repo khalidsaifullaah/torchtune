@@ -26,13 +26,13 @@ model:
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.qwen3.qwen3_tokenizer
-  path: /tmp/Qwen3-4B//vocab.json
-  merges_file: /tmp/Qwen3-4B//merges.txt
+  path: /tmp/Qwen3-8B/vocab.json
+  merges_file: /tmp/Qwen3-8B/merges.txt
   max_seq_len: null
 
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
-  checkpoint_dir: /tmp/Qwen3-4B/
+  checkpoint_dir: /tmp/Qwen3-8B/
   checkpoint_files: [
     model-00001-of-00003.safetensors,
     model-00002-of-00003.safetensors,
