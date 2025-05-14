@@ -37,10 +37,12 @@ tokenizer:
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
   checkpoint_dir: /tmp/qwen3_1_7B
-  checkpoint_files: [
-    model-00001-of-00001.safetensors,
-    model-00002-of-00002.safetensors,
-  ]
+  checkpoint_files:
+    filename_format: model-{}-of-{}.safetensors
+  # checkpoint_files: [
+  #   model-00001-of-00001.safetensors,
+  #   model-00002-of-00002.safetensors,
+  # ]
   recipe_checkpoint: null
   output_dir: /tmp/Qwen3-1.7B-SFT/
   model_type: QWEN2
