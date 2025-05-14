@@ -79,7 +79,7 @@ PASS/FAIL
 Few sentences of reasoning
 </reasoning>
 "
-valid_data_files: data/multirule/multi_rule_test_98_cot.jsonl
+# valid_data_files: data/multirule/multi_rule_test_98_cot.jsonl
 seed: 1234
 shuffle: True
 
