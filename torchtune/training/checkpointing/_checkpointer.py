@@ -866,6 +866,11 @@ class FullModelHFCheckpointer(_CheckpointerInterface):
                 # Save the appropriate index file based on serialization format
                 # e.g. {metadata: {total_size: 1234},
                 # weight_map: {"key1": "model_0001.safetensors", "key2": "model_0002.safetensors"}}
+                if self._config["tie_word_embeddings"] and "lm_head.weight" in self._weight_map:
+                        print("Warning: Tied word embeddings are not supported in torchtune saving format. "
+                              "The tied word embeddings will be saved as separate tensors.")
+                        print("Keys for _weight_map will be updated to reflect this.")
+                        self._weight_map.pop("lm_head.weight")
                 if self._safe_serialization:
                     weight_map = {
                         k: map_original_name_to_new_name[cpt_idx] + ".safetensors"
