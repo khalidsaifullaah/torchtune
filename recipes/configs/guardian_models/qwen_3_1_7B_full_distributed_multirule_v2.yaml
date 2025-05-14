@@ -29,7 +29,7 @@ model:
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.qwen3.qwen3_tokenizer
-  path: /tmp/qwen3_1_7B
+  path: /tmp/qwen3_1_7B/vocab.json
   merges_file: /tmp/qwen3_1_7B/merges.txt
   max_seq_len: null
 
