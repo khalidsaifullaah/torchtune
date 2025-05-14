@@ -29,14 +29,14 @@ model:
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.qwen3.qwen3_tokenizer
-  path: /tmp/Qwen3-1.7B/vocab.json
-  merges_file: /tmp/Qwen3-1.7B/merges.txt
+  path: /tmp/qwen3_1_7B
+  merges_file: /tmp/qwen3_1_7B/merges.txt
   max_seq_len: null
 
 # Checkpointer
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
-  checkpoint_dir: /tmp/Qwen3-1.7B
+  checkpoint_dir: /tmp/qwen3_1_7B
   checkpoint_files: [
     model-00001-of-00002.safetensors,
     model-00002-of-00002.safetensors,
@@ -107,7 +107,7 @@ device: cuda
 num_gpus: 8
 
 # Memory management
-enable_activation_checkpointing: False  # True reduces memory
+enable_activation_checkpointing: True  # True reduces memory
 enable_activation_offloading: False  # True reduces memory
 
 # Reduced precision
