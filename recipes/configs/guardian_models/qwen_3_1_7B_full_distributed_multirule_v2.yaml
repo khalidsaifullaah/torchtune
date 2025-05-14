@@ -20,26 +20,29 @@
 # output_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/full_ft_multirule_v2 # /tmp may be deleted by your system. Change it to your preference.
 
 # Model Arguments
+output_dir: /tmp/torchtune/qwen3_1_7B/full # /tmp may be deleted by your system. Change it to your preference.
+
+# Model arguments
 model:
-  _component_: torchtune.models.qwen3.qwen3_4b_instruct
+  _component_: torchtune.models.qwen3.qwen3_1_7b_instruct
 
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.qwen3.qwen3_tokenizer
-  path: /fs/cml-projects/guardian_models/models/Qwen3-4B/huggingface_base/vocab.json
-  merges_file: /fs/cml-projects/guardian_models/models/Qwen3-4B/huggingface_base/merges.txt
+  path: /tmp/Qwen3-1.7B/vocab.json
+  merges_file: /tmp/Qwen3-1.7B/merges.txt
   max_seq_len: null
 
+# Checkpointer
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
-  checkpoint_dir: /fs/cml-projects/guardian_models/models/Qwen3-4B/huggingface_base/
+  checkpoint_dir: /tmp/Qwen3-1.7B
   checkpoint_files: [
-    model-00001-of-00003.safetensors,
-    model-00002-of-00003.safetensors,
-    model-00003-of-00003.safetensors,
+    model-00001-of-00002.safetensors,
+    model-00002-of-00002.safetensors,
   ]
   recipe_checkpoint: null
-  output_dir: /fs/cml-projects/guardian_models/models/Qwen3-4B/full_ft_multirule_v2
+  output_dir: ${output_dir}
   model_type: QWEN2
 resume_from_checkpoint: False
 
@@ -76,12 +79,13 @@ PASS/FAIL
 Few sentences of reasoning
 </reasoning>
 "
+valid_data_files: data/multirule/multi_rule_test_98_cot.jsonl
 seed: 1234
 shuffle: True
 
 # Fine-tuning arguments
 batch_size: 16
-epochs: 4
+epochs: 3
 optimizer:
   _component_: torch.optim.AdamW
   fused: True
@@ -97,10 +101,10 @@ gradient_accumulation_steps: 1  # Use to increase effective batch size
 clip_grad_norm: null
 compile: True  # torch.compile the model + loss, True increases speed + decreases memory
 optimizer_in_bwd: False  # True saves memory. Requires gradient_accumulation_steps=1
-num_gpus: 8
 
 # Training env
 device: cuda
+num_gpus: 8
 
 # Memory management
 enable_activation_checkpointing: False  # True reduces memory
@@ -115,7 +119,7 @@ metric_logger:
   _component_: torchtune.training.metric_logging.WandBLogger
   entity: guardian-models
   project: sft-compliance
-  name: qwen3 4b multirule skip_explanations
+  name: qwen3 1.7b multirule skip_explanations
 log_every_n_steps: 1
 log_peak_memory_stats: False
 log_level: INFO  # DEBUG, WARN, etc.
