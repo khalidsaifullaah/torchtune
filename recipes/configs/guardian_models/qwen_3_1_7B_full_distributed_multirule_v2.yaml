@@ -20,7 +20,7 @@
 # output_dir: /fs/cml-projects/guardian_models/models/Qwen2.5-3B-Instruct/full_ft_multirule_v2 # /tmp may be deleted by your system. Change it to your preference.
 
 # Model Arguments
-output_dir: /tmp/torchtune/qwen3_1_7B/full # /tmp may be deleted by your system. Change it to your preference.
+# output_dir: /tmp/torchtune/qwen3_1_7B/full # /tmp may be deleted by your system. Change it to your preference.
 
 # Model arguments
 model:
@@ -42,7 +42,7 @@ checkpointer:
     model-00002-of-00002.safetensors,
   ]
   recipe_checkpoint: null
-  output_dir: ${output_dir}
+  output_dir: /tmp/Qwen3-1.7B-SFT/
   model_type: QWEN2
 resume_from_checkpoint: False
 
