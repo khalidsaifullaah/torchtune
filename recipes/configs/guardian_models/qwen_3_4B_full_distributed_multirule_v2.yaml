@@ -50,6 +50,7 @@ dataset:
   _component_: torchtune.datasets.instruct_dataset
   source: tomg-group-umd/compliance
   name: compliance
+  revision: ddcbbfc10901e42ce9ae1a897475467302764ef5
   split: train_32000_mix
   packed: False  # True increases speed
   column_map:
